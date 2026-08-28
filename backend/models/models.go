@@ -1,6 +1,8 @@
 package models
 
 import (
+	"slices"
+	"strings"
 	"time"
 
 	"gorm.io/gorm"
@@ -39,18 +41,29 @@ type Agent struct {
 	SheetSyncEnabled     bool   `gorm:"not null;default:false" json:"sheet_sync_enabled"`
 
 	// Cek ongkir realtime via Mengantar API + RajaOngkir (fallback).
-	OriginCityID               int    `gorm:"default:0" json:"origin_city_id"`
-	OriginCityName             string `gorm:"size:100" json:"origin_city_name"`
-	DefaultWeightGram          int    `gorm:"default:1000" json:"default_weight_gram"`
-	EnabledCouriers            string `gorm:"size:100;default:'JNE,JT'" json:"enabled_couriers"`
-	MengantarOriginAutofillID  string `gorm:"size:30" json:"mengantar_origin_autofill_id"`  // PICKUP_AUTOFILL dari Mengantar
-	MengantarOriginAddressID   string `gorm:"size:30" json:"mengantar_origin_address_id"`   // _id saved address Mengantar
+	OriginCityID              int    `gorm:"default:0" json:"origin_city_id"`
+	OriginCityName            string `gorm:"size:100" json:"origin_city_name"`
+	DefaultWeightGram         int    `gorm:"default:1000" json:"default_weight_gram"`
+	EnabledCouriers           string `gorm:"size:100;default:'JNE,JT'" json:"enabled_couriers"`
+	MengantarOriginAutofillID string `gorm:"size:30" json:"mengantar_origin_autofill_id"` // PICKUP_AUTOFILL dari Mengantar
+	MengantarOriginAddressID  string `gorm:"size:30" json:"mengantar_origin_address_id"`  // _id saved address Mengantar
 
 	// REST API publik + Webhook (per-nomor). APIKey & WebhookSecret tidak pernah
 	// diserialkan ke JSON (json:"-") — hanya ditampilkan tersamar / sekali saat dibuat.
 	APIKey        string `gorm:"index;size:80" json:"-"`
 	WebhookURL    string `gorm:"type:text" json:"webhook_url"`
 	WebhookSecret string `gorm:"size:80" json:"-"`
+
+	// Meta CAPI: konversi label WhatsApp -> event Facebook Ads (server-side).
+	MetaPixelID       string `gorm:"size:32" json:"meta_pixel_id"`
+	MetaAccessToken   string `gorm:"size:255" json:"-"`
+	MetaTestEventCode string `gorm:"size:32" json:"meta_test_event_code"`
+	MetaConvLabels    string `gorm:"type:text" json:"meta_conv_labels"` // label_id dipisah koma
+	MetaEventName     string `gorm:"size:32;default:Purchase" json:"meta_event_name"`
+	// MetaLabelEvents = pemetaan label_id -> event CAPI (JSON array):
+	// [{"label_id":"12","event":"Purchase"},...]
+	// Kosong = semua label konversi memakai MetaEventName (fallback lama).
+	MetaLabelEvents string `gorm:"type:text" json:"meta_label_events"`
 
 	CreatedAt time.Time `json:"created_at"`
 }
@@ -85,29 +98,29 @@ type ChatHistory struct {
 }
 
 type AITurn struct {
-	ID                 uint      `gorm:"primaryKey" json:"id"`
-	AgentID            uint      `gorm:"index;not null" json:"agent_id"`
-	Sender             string    `gorm:"index;size:32" json:"sender"`
-	UserMessage        string    `gorm:"type:text" json:"user_message"`
-	AIReply            string    `gorm:"type:text" json:"ai_reply"`
-	Model              string    `gorm:"size:80" json:"model"`
-	PromptVersion      string    `gorm:"size:40;default:'legacy';index" json:"prompt_version"`
-	KnowledgeUsedCount int       `json:"knowledge_used_count"`
-	KnowledgeIDs       string    `gorm:"size:255" json:"knowledge_ids"` // "12,45,90"
-	TopSimilarity      float64   `json:"top_similarity"`               // 0..1, 0 bila keyword-only
-	AnswerOverlap      float64   `json:"answer_overlap"`               // 0..1 overlap jawaban vs knowledge
-	ProductUsedCount   int       `json:"product_used_count"`
-	ProductIDs         string    `gorm:"size:255" json:"product_ids"`
-	RetrievalMode      string    `gorm:"size:24;index" json:"retrieval_mode"` // none|keyword|semantic|hybrid
+	ID                 uint    `gorm:"primaryKey" json:"id"`
+	AgentID            uint    `gorm:"index;not null" json:"agent_id"`
+	Sender             string  `gorm:"index;size:32" json:"sender"`
+	UserMessage        string  `gorm:"type:text" json:"user_message"`
+	AIReply            string  `gorm:"type:text" json:"ai_reply"`
+	Model              string  `gorm:"size:80" json:"model"`
+	PromptVersion      string  `gorm:"size:40;default:'legacy';index" json:"prompt_version"`
+	KnowledgeUsedCount int     `json:"knowledge_used_count"`
+	KnowledgeIDs       string  `gorm:"size:255" json:"knowledge_ids"` // "12,45,90"
+	TopSimilarity      float64 `json:"top_similarity"`                // 0..1, 0 bila keyword-only
+	AnswerOverlap      float64 `json:"answer_overlap"`                // 0..1 overlap jawaban vs knowledge
+	ProductUsedCount   int     `json:"product_used_count"`
+	ProductIDs         string  `gorm:"size:255" json:"product_ids"`
+	RetrievalMode      string  `gorm:"size:24;index" json:"retrieval_mode"` // none|keyword|semantic|hybrid
 	// RetrievalQuery = query efektif ke knowledge (bukan selalu sama dengan user_message).
-	RetrievalQuery    string `gorm:"type:text" json:"retrieval_query"`
-	GroundingRetried  bool   `gorm:"not null;default:false" json:"grounding_retried"`
-	GroundingFallback bool   `gorm:"not null;default:false;index" json:"grounding_fallback"`
-	UsedShippingTool   bool      `gorm:"not null;default:false;index" json:"used_shipping_tool"`
-	Escalated          bool      `gorm:"not null;default:false;index" json:"escalated"`
-	Error              string    `gorm:"type:text" json:"error"`
-	LatencyMs          int64     `json:"latency_ms"`
-	CreatedAt          time.Time `gorm:"index" json:"created_at"`
+	RetrievalQuery    string    `gorm:"type:text" json:"retrieval_query"`
+	GroundingRetried  bool      `gorm:"not null;default:false" json:"grounding_retried"`
+	GroundingFallback bool      `gorm:"not null;default:false;index" json:"grounding_fallback"`
+	UsedShippingTool  bool      `gorm:"not null;default:false;index" json:"used_shipping_tool"`
+	Escalated         bool      `gorm:"not null;default:false;index" json:"escalated"`
+	Error             string    `gorm:"type:text" json:"error"`
+	LatencyMs         int64     `json:"latency_ms"`
+	CreatedAt         time.Time `gorm:"index" json:"created_at"`
 }
 
 func (AITurn) TableName() string { return "ai_turns" }
@@ -225,6 +238,37 @@ type CrawlPage struct {
 	CreatedAt       time.Time  `json:"created_at"`
 }
 
+// Fitur ekstra yang bisa di-grant super admin ke user tertentu (disimpan CSV di User.Features).
+const (
+	FeatureAI   = "ai"   // menu Asisten AI + AI Learning
+	FeatureAkun = "akun" // seluruh section Akun: AI & Model, Widget, REST API, Pengaturan
+)
+
+// ValidFeatures = daftar fitur yang dikenal sistem. Nilai di luar daftar ini dibuang diam-diam.
+var ValidFeatures = []string{FeatureAI, FeatureAkun}
+
+// IsValidFeature mengecek apakah s termasuk fitur yang dikenal (case-insensitive, spasi diabaikan).
+func IsValidFeature(s string) bool {
+	return slices.Contains(ValidFeatures, strings.ToLower(strings.TrimSpace(s)))
+}
+
+// Role user. CATATAN KOMPAT: super admin lama di DB punya Role = "admin",
+// jadi jangan pernah menentukan super admin dari string role — selalu pakai User.IsSuperAdmin.
+const (
+	RoleSuperAdmin = "superadmin"
+	RoleManager    = "manager"
+	RoleCS         = "cs"
+)
+
+// IsValidRole mengecek role yang boleh dipakai: superadmin, manager, atau cs.
+func IsValidRole(s string) bool {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case RoleSuperAdmin, RoleManager, RoleCS:
+		return true
+	}
+	return false
+}
+
 type User struct {
 	ID                  uint       `gorm:"primaryKey" json:"id"`
 	Username            string     `gorm:"uniqueIndex;size:64;not null" json:"username"`
@@ -239,6 +283,108 @@ type User struct {
 	IsSuperAdmin        bool       `gorm:"default:false" json:"is_super_admin"`
 	PasswordResetToken  string     `gorm:"size:128" json:"-"`
 	PasswordResetExpiry *time.Time `json:"-"`
+	// Active=false -> user tidak bisa login / semua request ditolak 403.
+	Active bool `gorm:"not null;default:true" json:"active"`
+	// Features = daftar fitur ekstra yang di-grant super admin, CSV. Contoh: "ai" atau "ai,akun".
+	Features string `gorm:"size:255;default:''" json:"-"`
+
+	// Default jeda blast milik user ini (bukan milik nomor CS), dipakai tab Blast &
+	// Jadwal Blast sebagai nilai awal. Disimpan per akun karena satu CS bisa memegang
+	// beberapa nomor dan ritme kirimnya mengikuti orangnya, bukan nomornya.
+	BlastMinDelay     int `gorm:"not null;default:10" json:"blast_min_delay"`
+	BlastMaxDelay     int `gorm:"not null;default:30" json:"blast_max_delay"`
+	BlastRestEvery    int `gorm:"not null;default:25" json:"blast_rest_every"` // 0 = istirahat berkala dimatikan
+	BlastRestDuration int `gorm:"not null;default:90" json:"blast_rest_duration"`
+}
+
+// Nilai bawaan jeda blast — dipakai untuk user lama yang kolomnya masih 0
+// dan sebagai batas atas/bawah saat menyimpan.
+const (
+	DefaultBlastMinDelay     = 10
+	DefaultBlastMaxDelay     = 30
+	DefaultBlastRestEvery    = 25
+	DefaultBlastRestDuration = 90
+
+	MaxBlastDelaySeconds = 3600 // 1 jam; di atas ini hampir pasti salah ketik
+	MaxBlastRestEvery    = 1000
+	MaxBlastRestDuration = 7200 // 2 jam
+)
+
+// BlastDelay mengembalikan jeda blast user dengan pengaman: kolom yang masih 0
+// (user lama, sebelum kolom ini ada) jatuh ke nilai bawaan. RestEvery sengaja
+// TIDAK dipulihkan saat 0 — 0 memang berarti "istirahat berkala dimatikan".
+func (u User) BlastDelay() (minDelay, maxDelay, restEvery, restDuration int) {
+	minDelay, maxDelay = u.BlastMinDelay, u.BlastMaxDelay
+	restEvery, restDuration = u.BlastRestEvery, u.BlastRestDuration
+	if minDelay < 1 {
+		minDelay = DefaultBlastMinDelay
+	}
+	if maxDelay < minDelay {
+		maxDelay = minDelay
+	}
+	if restEvery < 0 {
+		restEvery = 0
+	}
+	if restDuration < 1 {
+		restDuration = DefaultBlastRestDuration
+	}
+	return
+}
+
+// ValidateBlastDelay memeriksa nilai yang dikirim user sebelum disimpan.
+// Mengembalikan pesan error Bahasa Indonesia, atau "" kalau semuanya wajar.
+func ValidateBlastDelay(minDelay, maxDelay, restEvery, restDuration int) string {
+	switch {
+	case minDelay < 1:
+		return "Jeda minimal harus sedikitnya 1 detik"
+	case maxDelay < minDelay:
+		return "Jeda maksimal harus lebih besar atau sama dengan jeda minimal"
+	case maxDelay > MaxBlastDelaySeconds:
+		return "Jeda maksimal terlalu besar (batas 3600 detik)"
+	case restEvery < 0 || restEvery > MaxBlastRestEvery:
+		return "Istirahat setiap N pesan harus antara 0 dan 1000"
+	case restEvery > 0 && restDuration < 1:
+		return "Lama istirahat harus sedikitnya 1 detik saat istirahat berkala aktif"
+	case restDuration > MaxBlastRestDuration:
+		return "Lama istirahat terlalu besar (batas 7200 detik)"
+	}
+	return ""
+}
+
+// FeatureList memecah CSV Features jadi slice bersih (trim + lowercase, entri kosong dibuang).
+// Aman untuk Features kosong: mengembalikan slice kosong, bukan [""].
+func (u User) FeatureList() []string {
+	out := []string{}
+	for _, part := range strings.Split(u.Features, ",") {
+		f := strings.ToLower(strings.TrimSpace(part))
+		if f == "" {
+			continue
+		}
+		out = append(out, f)
+	}
+	return out
+}
+
+// HasFeature mengecek akses fitur. Super admin selalu lolos tanpa kecuali.
+func (u User) HasFeature(name string) bool {
+	if u.IsSuperAdmin {
+		return true
+	}
+	return slices.Contains(u.FeatureList(), strings.ToLower(strings.TrimSpace(name)))
+}
+
+// SetFeatures menyimpan daftar fitur ke u.Features: hanya fitur valid yang dipakai,
+// duplikat dibuang, sisanya digabung dengan koma. Fitur tak dikenal diabaikan diam-diam.
+func (u *User) SetFeatures(list []string) {
+	clean := []string{}
+	for _, item := range list {
+		f := strings.ToLower(strings.TrimSpace(item))
+		if !IsValidFeature(f) || slices.Contains(clean, f) {
+			continue
+		}
+		clean = append(clean, f)
+	}
+	u.Features = strings.Join(clean, ",")
 }
 
 // LoginThrottle menyimpan rate-limit login secara persistent agar tidak hilang saat restart.

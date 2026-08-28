@@ -1,14 +1,12 @@
 package services
 
-// Glue Meta CAPI ↔ label WhatsApp (single-tenant, non-SaaS):
-// saat label konversi menempel ke kontak, event dikirim ke Pixel Meta
-// (server-side) lengkap dengan nilai transaksi (value-based ads).
-
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log"
-	"strconv"
+	"net/http"
 	"strings"
 	"time"
 
@@ -16,33 +14,100 @@ import (
 	"wa-assistant/backend/models"
 )
 
-const (
-	metaConvLabelsKey = "meta_conv_labels" // label WA yang dianggap konversi (koma)
-	metaEventNameKey  = "meta_event_name"  // event default (mis. Purchase)
-)
+// ---- Fase 5: Meta Conversions API (CAPI) ----
+// Saat label konversi menempel ke kontak (OnLabelAssoc), event dikirim ke
+// Pixel Meta (server-side) sehingga Meta Ads melihat konversi nyata.
+// Dedup per (agent, kontak, label) — satu label = satu event.
 
-// MetaEventForLabel memetakan label → event Meta (dari setting global).
-func MetaEventForLabel(labelID, fallback string) string {
-	raw := database.GetAppSetting("meta_label_events", "")
-	if raw == "" {
+const metaGraphVersion = "v19.0"
+
+// hashUserData = sha256 lowercase (format yang diwajibkan Meta utk user_data).
+func hashUserData(v string) string {
+	if v == "" {
+		return ""
+	}
+	h := sha256.Sum256([]byte(strings.ToLower(strings.TrimSpace(v))))
+	return hex.EncodeToString(h[:])
+}
+
+// MetaLabelEvent = pemetaan label_id -> event CAPI (skema pelabelan).
+type MetaLabelEvent struct {
+	LabelID string `json:"label_id"`
+	Event   string `json:"event"`
+}
+
+// parseMetaLabelEvents mengurai JSON mapping label->event menjadi map.
+func parseMetaLabelEvents(raw string) map[string]string {
+	out := map[string]string{}
+	if strings.TrimSpace(raw) == "" {
+		return out
+	}
+	var arr []MetaLabelEvent
+	if err := json.Unmarshal([]byte(raw), &arr); err != nil {
+		return out
+	}
+	for _, m := range arr {
+		if id := strings.TrimSpace(m.LabelID); id != "" {
+			if ev := strings.TrimSpace(m.Event); ev != "" {
+				out[id] = ev
+			}
+		}
+	}
+	return out
+}
+
+// MetaEventForLabel = event CAPI untuk label tertentu (dari mapping agent),
+// fallback ke event default (MetaEventName) bila tidak dipetakan.
+func MetaEventForLabel(agentID uint, labelID, fallback string) string {
+	if labelID == "" {
 		return fallback
 	}
-	var m map[string]string
-	if err := json.Unmarshal([]byte(raw), &m); err == nil {
-		if v, ok := m[labelID]; ok && v != "" {
-			return v
-		}
+	var a models.Agent
+	database.DB.Select("meta_label_events").Where("id = ?", agentID).Limit(1).Find(&a)
+	if ev, ok := parseMetaLabelEvents(a.MetaLabelEvents)[labelID]; ok {
+		return ev
 	}
 	return fallback
 }
 
-// IsMetaConvLabel mengecek apakah label termasuk label konversi (global).
-func IsMetaConvLabel(labelID string) bool {
-	cfg, err := GetMetaTrackingConfig()
-	if err != nil || !cfg.Enabled || cfg.PixelID == "" || cfg.AccessToken == "" {
+// MetaLabelEventsMap = map label_id -> event (dari JSON raw) untuk UI.
+func MetaLabelEventsMap(raw string) map[string]string {
+	return parseMetaLabelEvents(raw)
+}
+
+// MetaStandardEvents = daftar event standar Meta (untuk dropdown skema pelabelan).
+func MetaStandardEvents() []string {
+	return []string{
+		"Purchase", "Lead", "Contact", "CompleteRegistration",
+		"SubmitApplication", "Schedule", "Subscribe", "StartTrial",
+		"InitiateCheckout", "AddToCart", "AddToWishlist", "ViewContent", "Search",
+	}
+}
+
+// agentMetaConvLabels = daftar label_id yang dianggap konversi milik agent.
+func agentMetaConvLabels(agentID uint) (pixelID, token, testCode, eventName string, labels []string) {
+	var a models.Agent
+	database.DB.Select("meta_pixel_id", "meta_access_token", "meta_test_event_code", "meta_event_name", "meta_conv_labels").
+		Where("id = ?", agentID).Limit(1).Find(&a)
+	eventName = strings.TrimSpace(a.MetaEventName)
+	if eventName == "" {
+		eventName = "Purchase"
+	}
+	for _, l := range strings.Split(a.MetaConvLabels, ",") {
+		if l = strings.TrimSpace(l); l != "" {
+			labels = append(labels, l)
+		}
+	}
+	return a.MetaPixelID, a.MetaAccessToken, a.MetaTestEventCode, eventName, labels
+}
+
+// IsMetaConvLabel = true bila label ini dikonfigurasi sebagai label konversi.
+func IsMetaConvLabel(agentID uint, labelID string) bool {
+	_, token, _, _, labels := agentMetaConvLabels(agentID)
+	if token == "" || len(labels) == 0 {
 		return false
 	}
-	for _, l := range splitComma(database.GetAppSetting(metaConvLabelsKey, "")) {
+	for _, l := range labels {
 		if l == labelID {
 			return true
 		}
@@ -50,92 +115,129 @@ func IsMetaConvLabel(labelID string) bool {
 	return false
 }
 
-// FireMetaConversion mengirim event CAPI saat label konversi menempel.
-// Dedup per (agent, kontak, label) — satu label = satu event.
+// FireMetaConversion mengirim event CAPI (async via RecoverGo) — dedup
+// per (agent, kontak, label): event yang sama tidak dikirim dua kali.
 func FireMetaConversion(agentID uint, sender, labelID string) {
 	if sender == "" || labelID == "" {
 		return
 	}
-	cfg, err := GetMetaTrackingConfig()
-	if err != nil || !cfg.Enabled || cfg.PixelID == "" || cfg.AccessToken == "" {
+	pixelID, token, testCode, eventName, labels := agentMetaConvLabels(agentID)
+	if pixelID == "" || token == "" || len(labels) == 0 {
 		return
 	}
-	eventName := MetaEventForLabel(labelID, database.GetAppSetting(metaEventNameKey, "Purchase"))
-
+	match := false
+	for _, l := range labels {
+		if l == labelID {
+			match = true
+			break
+		}
+	}
+	if !match {
+		return
+	}
+	// Event per-label (skema pelabelan) — fallback ke event default agent.
+	eventName = MetaEventForLabel(agentID, labelID, eventName)
 	Go("MetaCAPI", func() {
 		defer RecoverGo("MetaCAPI")
-		// Dedup: EventID deterministik per (agent, kontak, label) — satu label = satu event.
-		eventID := fmt.Sprintf("%d-%s-%s", agentID, sender, labelID)
-		var existing models.MetaConversionEvent
-		database.DB.Where("event_id = ?", eventID).First(&existing)
+		// Dedup: baris unik (agent_id, sender, label_id) — FirstOrCreate.
+		var existing models.MetaConversion
+		database.DB.Where(models.MetaConversion{AgentID: agentID, Sender: sender, LabelID: labelID}).First(&existing)
 		if existing.ID > 0 {
 			return // sudah pernah dikirim
 		}
-		customData := map[string]any{"currency": "IDR"}
-		if v := metaPurchaseValue(agentID, sender); v > 0 {
-			customData["value"] = v
+		payload := map[string]any{
+			"event_name": eventName,
+			"event_time": time.Now().Unix(),
+			"user_data": map[string]string{
+				"ph": hashUserData(sender),
+			},
+			"custom_data": map[string]any{"currency": "IDR"},
 		}
-		ev := MetaEventInput{
-			EventID:    eventID,
-			EventName:  eventName,
-			EventTime:  time.Now(),
-			UserData:   MetaUserDataInput{Phone: sender},
-			CustomData: customData,
+		if testCode != "" {
+			payload["test_event_code"] = testCode
 		}
-		if err := EnqueueMetaEvent(ev); err != nil {
-			log.Printf("MetaCAPI: gagal antri event %s utk %s (label %s): %v", eventName, sender, labelID, err)
+		body, _ := json.Marshal(map[string]any{"data": []any{payload}})
+		url := fmt.Sprintf("https://graph.facebook.com/%s/%s/events", metaGraphVersion, pixelID)
+		req, err := http.NewRequest(http.MethodPost, url, strings.NewReader(string(body)))
+		if err != nil {
+			log.Printf("MetaCAPI: build request gagal: %v", err)
 			return
 		}
-		log.Printf("MetaCAPI: agent %d event %s utk %s (label %s) diantri", agentID, eventName, sender, labelID)
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer "+token)
+		client := &http.Client{Timeout: 12 * time.Second}
+		resp, err := client.Do(req)
+		status := "sent"
+		respInfo := ""
+		if err != nil {
+			status = "failed"
+			respInfo = truncateForLog(err.Error(), 255)
+		} else {
+			defer resp.Body.Close()
+			buf := make([]byte, 1024)
+			n, _ := resp.Body.Read(buf)
+			respInfo = strings.TrimSpace(string(buf[:n]))
+			if resp.StatusCode >= 300 {
+				status = "failed"
+			}
+		}
+		database.DB.Create(&models.MetaConversion{
+			AgentID: agentID, Sender: sender, LabelID: labelID,
+			EventName: eventName, Status: status, Response: truncateForLog(respInfo, 255),
+			SentAt: time.Now(),
+		})
+		log.Printf("MetaCAPI: agent %d event %s utk %s (label %s) -> %s", agentID, eventName, sender, labelID, status)
 	})
 }
 
-// metaPurchaseValue mencari nilai transaksi terbaru pelanggan untuk event
-// value-based. Prioritas: ClosingRecord (order terdeteksi AI), lalu
-// ProductOrder (checkout).
-func metaPurchaseValue(agentID uint, sender string) float64 {
-	var rec models.ClosingRecord
-	if database.DB.Where("agent_id = ? AND sender = ?", agentID, sender).
-		Order("created_at desc").First(&rec).Error == nil {
-		if v := extractAmountFromJSON(rec.DataJSON); v > 0 {
-			return v
+// SendMetaTestEvent = kirim event percobaan langsung (utk tombol "Tes Kirim").
+func SendMetaTestEvent(agentID uint, sender, pixelID, token string) {
+	Go("MetaTestEvent", func() {
+		defer RecoverGo("MetaTestEvent")
+		payload := map[string]any{
+			"event_name": "TestEvent",
+			"event_time": time.Now().Unix(),
+			"user_data":  map[string]string{"ph": hashUserData(sender)},
 		}
-	}
-	var order models.ProductOrder
-	if database.DB.Where("agent_id = ? AND sender = ?", agentID, sender).
-		Order("created_at desc").First(&order).Error == nil {
-		if v := extractAmountFromJSON(order.DataJSON); v > 0 {
-			return v
+		body, _ := json.Marshal(map[string]any{"data": []any{payload}})
+		url := fmt.Sprintf("https://graph.facebook.com/%s/%s/events", metaGraphVersion, pixelID)
+		req, err := http.NewRequest(http.MethodPost, url, strings.NewReader(string(body)))
+		if err != nil {
+			return
 		}
-	}
-	return 0
-}
-
-// extractAmountFromJSON memindai nilai uang dari JSON (kunci umum level atas).
-func extractAmountFromJSON(raw string) float64 {
-	if strings.TrimSpace(raw) == "" {
-		return 0
-	}
-	var m map[string]any
-	if err := json.Unmarshal([]byte(raw), &m); err != nil {
-		return 0
-	}
-	for _, key := range []string{"total", "grand_total", "harga", "amount", "nilai", "price", "subtotal"} {
-		if v, ok := m[key]; ok {
-			if f, err := strconv.ParseFloat(strings.TrimSpace(fmt.Sprintf("%v", v)), 64); err == nil && f > 0 {
-				return f
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer "+token)
+		client := &http.Client{Timeout: 12 * time.Second}
+		resp, err := client.Do(req)
+		status := "sent"
+		respInfo := ""
+		if err != nil {
+			status = "failed"
+			respInfo = truncateForLog(err.Error(), 255)
+		} else {
+			defer resp.Body.Close()
+			buf := make([]byte, 1024)
+			n, _ := resp.Body.Read(buf)
+			respInfo = strings.TrimSpace(string(buf[:n]))
+			if resp.StatusCode >= 300 {
+				status = "failed"
 			}
 		}
-	}
-	return 0
+		database.DB.Create(&models.MetaConversion{
+			AgentID: agentID, Sender: sender, LabelID: "TEST-EVENT",
+			EventName: "TestEvent", Status: status, Response: truncateForLog(respInfo, 255),
+			SentAt: time.Now(),
+		})
+		log.Printf("MetaCAPI: test event agent %d -> %s (%s)", agentID, status, truncateForLog(respInfo, 120))
+	})
 }
 
-func splitComma(s string) []string {
-	var out []string
-	for _, p := range strings.Split(s, ",") {
-		if p = strings.TrimSpace(p); p != "" {
-			out = append(out, p)
-		}
+// MetaConversions = log event CAPI (utk dashboard "Tes & Log").
+func MetaConversions(agentID uint, limit int) []models.MetaConversion {
+	if limit <= 0 || limit > 100 {
+		limit = 20
 	}
+	var out []models.MetaConversion
+	database.DB.Where("agent_id = ?", agentID).Order("id desc").Limit(limit).Find(&out)
 	return out
 }

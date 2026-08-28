@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"log"
+	"net/url"
 	"strings"
 
 	"wa-assistant/backend/database"
@@ -15,12 +16,14 @@ import (
 var apiConfigKeys = []string{
 	"api_key", "api_model", "vision_model", "embedding_model",
 	"deepseek_api_key", "deepseek_model", "chat_provider",
+	"custom_base_url", "custom_api_key", "custom_model",
 }
 
 // sensitiveAPIKeys = key yang disimpan terenkripsi at-rest & disamarkan saat ditampilkan.
 var sensitiveAPIKeys = map[string]bool{
 	"api_key":          true,
 	"deepseek_api_key": true,
+	"custom_api_key":   true,
 }
 
 // GetAPIConfig mengembalikan seluruh konfigurasi API (key sensitif disamarkan sebagian).
@@ -43,6 +46,15 @@ func SaveAPIConfig(c *gin.Context) {
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(400, gin.H{"error": "Format tidak valid"})
 		return
+	}
+	// Base URL custom dirapikan & divalidasi dulu supaya tidak tersimpan setengah jadi.
+	if v, ok := req["custom_base_url"]; ok && strings.TrimSpace(v) != "" {
+		normalized := services.NormalizeAIBaseURL(v)
+		if u, err := url.Parse(normalized); err != nil || u.Host == "" {
+			c.JSON(400, gin.H{"error": "Base URL custom tidak valid. Contoh: https://api.penyedia.com/v1"})
+			return
+		}
+		req["custom_base_url"] = normalized
 	}
 	for _, k := range apiConfigKeys {
 		if v, ok := req[k]; ok && strings.TrimSpace(v) != "" {

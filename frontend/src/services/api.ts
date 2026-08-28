@@ -19,6 +19,14 @@ api.interceptors.response.use(
       localStorage.removeItem('token');
       window.location.href = '/login';
     }
+    // Akun dinonaktifkan super admin saat user masih login: semua request jadi 403.
+    // Tanpa ini dashboard-nya tetap tampil normal (data lama dari cache) tapi mati
+    // total tanpa penjelasan, jadi langsung dikeluarkan ke halaman login.
+    if (err.response?.status === 403 && err.response?.data?.account_disabled && !isLoginRequest) {
+      localStorage.removeItem('token');
+      localStorage.removeItem('user');
+      window.location.href = '/login?disabled=1';
+    }
     return Promise.reject(err);
   }
 );

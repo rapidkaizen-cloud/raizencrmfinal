@@ -57,8 +57,17 @@ func ListChatModelsForProvider(ctx context.Context, provider string) ([]ChatMode
 	if provider == "" {
 		provider = database.GetAppSetting("chat_provider", "")
 	}
-	if provider == "deepseek-direct" {
+	switch provider {
+	case "deepseek-direct":
 		return listChatModels(ctx, deepseekBase, apiKeyFromDB("deepseek_api_key", "DEEPSEEK_API_KEY"), "DeepSeek")
+	case customProviderKey:
+		p := customPreset()
+		if p.BaseURL == "" {
+			return nil, fmt.Errorf("Base URL custom belum diisi")
+		}
+		// Tidak semua gateway OpenAI-compatible menyediakan GET /models; kalau gagal,
+		// dashboard tetap bisa mengisi nama model secara manual.
+		return listChatModels(ctx, p.BaseURL, apiKeyForPreset(p), "Custom")
 	}
 	return ListOpenRouterChatModels(ctx)
 }
@@ -188,15 +197,52 @@ func apiConfigFromDB(dbKey, envKey, defaultVal string) string {
 const openRouterBase = "https://openrouter.ai/api/v1"
 const deepseekBase = "https://api.deepseek.com/v1"
 
+// customProviderKey = provider "bawa gateway sendiri": base URL, API key, dan nama model
+// diisi user di dashboard (mis. Azure OpenAI, Groq, Together, LiteLLM, Ollama, LM Studio).
+// Syaratnya endpoint harus OpenAI-compatible (/chat/completions).
+const customProviderKey = "custom"
+
 type aiPreset struct {
 	Key, Label, Short, Model, BaseURL, KeyEnv string
 	APIKey                                    string
 }
 
+// customPreset membaca konfigurasi gateway custom dari dashboard (fallback ke .env).
+func customPreset() aiPreset {
+	return aiPreset{
+		Key:     customProviderKey,
+		Label:   "Custom (OpenAI-compatible)",
+		Short:   "Custom",
+		Model:   apiConfigFromDB("custom_model", "CUSTOM_AI_MODEL", ""),
+		BaseURL: NormalizeAIBaseURL(apiConfigFromDB("custom_base_url", "CUSTOM_AI_BASE_URL", "")),
+		KeyEnv:  "CUSTOM_AI_API_KEY",
+		APIKey:  apiKeyFromDB("custom_api_key", "CUSTOM_AI_API_KEY"),
+	}
+}
+
+// NormalizeAIBaseURL merapikan base URL yang diketik user: buang spasi & garis miring
+// di ujung, tambahkan skema bila lupa, dan buang suffix path endpoint yang sering
+// ikut ter-copy (klien OpenAI menambahkannya sendiri).
+func NormalizeAIBaseURL(raw string) string {
+	u := strings.TrimSpace(raw)
+	if u == "" {
+		return ""
+	}
+	low := strings.ToLower(u)
+	if !strings.HasPrefix(low, "http://") && !strings.HasPrefix(low, "https://") {
+		u = "https://" + u
+	}
+	u = strings.TrimRight(u, "/")
+	for _, suffix := range []string{"/chat/completions", "/completions"} {
+		u = strings.TrimSuffix(u, suffix)
+	}
+	return strings.TrimRight(u, "/")
+}
+
 // aiPresetDefs dipertahankan untuk fallback model lama, tetapi seluruh preset tetap
 // menggunakan gateway dan API key OpenRouter yang sama.
 func aiPresetDefs() []aiPreset {
-	return []aiPreset{
+	defs := []aiPreset{
 		// --- DeepSeek Direct (API langsung, lebih murah) ---
 		{Key: "deepseek-direct", Label: "DeepSeek (Direct API)", Short: "DeepSeek Direct",
 			Model: apiConfigFromDB("deepseek_model", "DEEPSEEK_MODEL", "deepseek-chat"), BaseURL: deepseekBase, KeyEnv: "DEEPSEEK_API_KEY"},
@@ -210,6 +256,12 @@ func aiPresetDefs() []aiPreset {
 		{Key: "gpt-mini", Label: "GPT-4o mini (OpenRouter)", Short: "GPT-4o mini",
 			Model: config.Env("OPENROUTER_MODEL_GPTMINI", "openai/gpt-4o-mini"), BaseURL: openRouterBase, KeyEnv: "OPENROUTER_API_KEY"},
 	}
+	// Gateway custom hanya masuk daftar bila base URL-nya sudah diisi, supaya panel
+	// preset tidak menawarkan provider yang pasti gagal.
+	if cp := customPreset(); cp.BaseURL != "" {
+		defs = append(defs, cp)
+	}
+	return defs
 }
 
 func presetByKey(key string) aiPreset {
@@ -223,12 +275,21 @@ func presetByKey(key string) aiPreset {
 
 // activePreset menghasilkan konfigurasi model AI sesuai pengaturan dashboard.
 // Prioritas:
-//  1. DB setting 'chat_provider' = preset key (mis. "deepseek-direct")
-//  2. DB setting 'api_model' = model spesifik via OpenRouter
-//  3. Fallback: DeepSeek via OpenRouter
+//  1. DB setting 'chat_provider' = "custom" → base URL, key, & model milik user sendiri
+//  2. DB setting 'chat_provider' = preset key (mis. "deepseek-direct")
+//  3. DB setting 'api_model' = model spesifik via OpenRouter
+//  4. Fallback: DeepSeek via OpenRouter
 func activePreset() aiPreset {
 	// Cek apakah user memilih provider spesifik (mis. deepseek-direct)
 	providerKey := database.GetAppSetting("chat_provider", "")
+	if providerKey == customProviderKey {
+		p := customPreset()
+		if p.BaseURL != "" && p.Model != "" {
+			return p
+		}
+		log.Printf("AI: provider custom belum lengkap (base URL/model kosong), fallback ke OpenRouter")
+		providerKey = ""
+	}
 	if providerKey != "" {
 		for _, p := range aiPresetDefs() {
 			if p.Key == providerKey {
@@ -419,7 +480,10 @@ func ChatWithKnowledge(agentID uint, systemPrompt, tone, userMsg string, history
 		userMsg = EnrichUserMessageForAI(userMsg)
 	}
 	retrievalQuery := buildRetrievalQuery(userMsg, history)
-	relevant, retrievalMode, topSim := searchKnowledge(agentID, retrievalQuery)
+	// Satu vektor query dipakai bersama knowledge & katalog produk: teksnya sama persis,
+	// jadi cukup sekali panggil API embedding per pesan (bukan sekali per bagian retrieval).
+	queryVec := newQueryVector(retrievalQuery)
+	relevant, retrievalMode, topSim := searchKnowledge(agentID, retrievalQuery, queryVec)
 	trace := RetrievalTrace{
 		KnowledgeUsedCount: len(relevant),
 		KnowledgeIDs:       joinUintIDs(knowledgeIDs(relevant)),
@@ -452,7 +516,7 @@ func ChatWithKnowledge(agentID uint, systemPrompt, tone, userMsg string, history
 	}
 
 	productContext := ""
-	if pc, productIDs := productKnowledgeContext(agentID, retrievalQuery); pc != "" {
+	if pc, productIDs := productKnowledgeContext(agentID, retrievalQuery, queryVec); pc != "" {
 		productContext = pc
 		enhancedPrompt += productContext
 		trace.ProductUsedCount = len(productIDs)
@@ -493,8 +557,8 @@ KEBIJAKAN PERCAKAPAN CUSTOMER SERVICE:
 	temp := float32(0.7)
 	maxTok := 800
 	if len(relevant) > 0 {
-		temp = 0.4   // faktual & konsisten menjawab dari knowledge base
-		maxTok = 900 // ruang cukup untuk knowledge panjang (daftar harga, syarat, dsb.)
+		temp = 0.4    // faktual & konsisten menjawab dari knowledge base
+		maxTok = 4000 // ruang cukup untuk knowledge panjang (daftar harga, syarat, dsb.)
 	}
 
 	p := activePreset()
@@ -1099,7 +1163,7 @@ TUGAS FOLLOW-UP KONTEKSTUAL:
 	messages = append(messages, openai.ChatCompletionMessage{Role: openai.ChatMessageRoleUser, Content: userMsg})
 	preset := activePreset()
 	resp, err := clientForPreset(preset).CreateChatCompletion(context.Background(), openai.ChatCompletionRequest{
-		Model: preset.Model, Messages: messages, MaxTokens: 300, Temperature: 0.35,
+		Model: preset.Model, Messages: messages, MaxTokens: 1500, Temperature: 0.35,
 	})
 	if err != nil || len(resp.Choices) == 0 {
 		return "", err
@@ -1143,12 +1207,13 @@ func sanitizeCustomerFacingReply(reply string) string {
 
 // searchKnowledge mengembalikan knowledge terpilih, mode retrieval, dan similarity teratas (0 bila keyword-only).
 // v2: multi-sinyal (semantic + keyword + source + freshness) + dedupe + resolusi konflik angka.
-func searchKnowledge(agentID uint, msg string) ([]models.Knowledge, string, float64) {
+// qv = vektor query bersama satu pesan (boleh nil → semantic dilewati, keyword tetap jalan).
+func searchKnowledge(agentID uint, msg string, qv *queryVector) ([]models.Knowledge, string, float64) {
 	items := KnowledgeFor(agentID) // dari cache memori (embedding sudah di-parse)
 	if len(items) == 0 {
 		return nil, "none", 0
 	}
-	return selectKnowledgeAdvanced(msg, items)
+	return selectKnowledgeAdvanced(msg, items, qv)
 }
 
 func mergeKnowledgeResults(primary, secondary []models.Knowledge, limit int) []models.Knowledge {
@@ -1183,7 +1248,7 @@ func mergeKnowledgeResults(primary, secondary []models.Knowledge, limit int) []m
 
 // productKnowledgeContext memilih produk relevan via hybrid keyword + semantic embedding.
 // Mengembalikan blok prompt dan ID produk yang disuntikkan (untuk metrics).
-func productKnowledgeContext(agentID uint, msg string) (string, []uint) {
+func productKnowledgeContext(agentID uint, msg string, qv *queryVector) (string, []uint) {
 	items := ProductsFor(agentID)
 	if len(items) == 0 {
 		return "", nil
@@ -1196,12 +1261,8 @@ func productKnowledgeContext(agentID uint, msg string) (string, []uint) {
 		return "", nil
 	}
 
-	var qVec []float32
-	if EmbeddingEnabled() {
-		if vec, err := Embed(msg); err == nil {
-			qVec = vec
-		}
-	}
+	// Vektor query dipakai bersama retrieval knowledge (dihitung lazily, sekali per pesan).
+	qVec := qv.Vec()
 
 	type scoredProduct struct {
 		product models.Product
@@ -1385,8 +1446,8 @@ type scoredKnowledge struct {
 	sim float32
 }
 
-func semanticSearch(msg string, items []KBItem) ([]models.Knowledge, bool) {
-	ranked, ok := semanticSearchRanked(msg, items)
+func semanticSearch(items []KBItem, qv *queryVector) ([]models.Knowledge, bool) {
+	ranked, ok := semanticSearchRanked(items, qv)
 	if !ok {
 		return nil, false
 	}
@@ -1397,11 +1458,12 @@ func semanticSearch(msg string, items []KBItem) ([]models.Knowledge, bool) {
 	return out, true
 }
 
-func semanticSearchRanked(msg string, items []KBItem) ([]scoredKnowledge, bool) {
-	qVec, err := Embed(msg)
-	if err != nil {
-		log.Printf("Embedding: query gagal, fallback keyword: %v", err)
-		return nil, false
+// semanticSearchRanked memakai vektor query bersama (qv) agar tidak memanggil API
+// embedding ulang untuk teks yang sama di pesan yang sedang diproses.
+func semanticSearchRanked(items []KBItem, qv *queryVector) ([]scoredKnowledge, bool) {
+	qVec := qv.Vec()
+	if len(qVec) == 0 {
+		return nil, false // embedding nonaktif/gagal → biar keyword yang jalan
 	}
 
 	var ranked []scoredKnowledge
@@ -1677,7 +1739,7 @@ Jangan menghasilkan token [[ESCALATE]].`
 
 	p := activePreset()
 	// Temperature rendah: jawaban "belum bisa pastikan" harus stabil, bukan kreatif.
-	req := openai.ChatCompletionRequest{Model: p.Model, Messages: messages, MaxTokens: 150, Temperature: 0.35}
+	req := openai.ChatCompletionRequest{Model: p.Model, Messages: messages, MaxTokens: 1500, Temperature: 0.35}
 	resp, err := clientForPreset(p).CreateChatCompletion(context.Background(), req)
 	if err != nil {
 		return "", err

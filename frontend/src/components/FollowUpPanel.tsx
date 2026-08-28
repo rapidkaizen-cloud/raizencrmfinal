@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useDraftState } from '../draft';
 import {
   Box, Card, CardContent, Typography, Button, Stack, Chip, Switch, IconButton,
   Dialog, DialogTitle, DialogContent, DialogActions, TextField, Select, MenuItem,
@@ -62,11 +62,13 @@ export default function FollowUpPanel({ agentId }: { agentId: number }) {
   const allTags = crm?.all_tags || [];
 
   // ---- form urutan ----
-  const [open, setOpen] = useState(false);
-  const [editId, setEditId] = useState<number | null>(null);
-  const [name, setName] = useState('');
-  const [stopOnReply, setStopOnReply] = useState(true);
-  const [steps, setSteps] = useState<StepForm[]>([{ ...NEW_STEP, delay_value: 0, delay_unit: 'jam' }]);
+  // Panel di-unmount saat pindah tab, jadi isian dialog disimpan sebagai draft per CS.
+  const k = (key: string) => `followup:${agentId}:${key}`;
+  const [open, setOpen] = useDraftState(k('open'), false);
+  const [editId, setEditId] = useDraftState<number | null>(k('editId'), null);
+  const [name, setName] = useDraftState(k('name'), '');
+  const [stopOnReply, setStopOnReply] = useDraftState(k('stopOnReply'), true);
+  const [steps, setSteps] = useDraftState<StepForm[]>(k('steps'), [{ ...NEW_STEP, delay_value: 0, delay_unit: 'jam' }]);
 
   const openNew = () => {
     setEditId(null); setName(''); setStopOnReply(true);
@@ -95,16 +97,18 @@ export default function FollowUpPanel({ agentId }: { agentId: number }) {
     if (invalidOrder >= 0) { await swalAlert(`Waktu langkah ${invalidOrder + 1} tidak boleh lebih awal dari langkah sebelumnya.`, 'warning'); return; }
     await save.mutateAsync({ id: editId ?? undefined, name, stop_on_reply: stopOnReply, steps: payloadSteps } as Partial<FollowUp>);
     setOpen(false);
+    setEditId(null); setName(''); setStopOnReply(true);
+    setSteps([{ ...NEW_STEP, delay_value: 0, delay_unit: 'jam' }]);
   };
 
   const toggle = (fu: FollowUp) => save.mutate({ id: fu.id, enabled: !fu.enabled } as Partial<FollowUp>);
   const remove = async (fu: FollowUp) => { if (await swalConfirm(`Hapus urutan "${fu.name}"?`, 'Kontak yang sedang mengikuti urutan ini juga akan dihapus dari Follow-up.')) del.mutate(fu.id); };
 
   // ---- dialog daftarkan kontak ----
-  const [enrollFu, setEnrollFu] = useState<FollowUp | null>(null);
-  const [recipients, setRecipients] = useState('');
-  const [enrollTag, setEnrollTag] = useState('');
-  const [enrollStage, setEnrollStage] = useState<LeadStage | ''>('');
+  const [enrollFu, setEnrollFu] = useDraftState<FollowUp | null>(k('enrollFu'), null);
+  const [recipients, setRecipients] = useDraftState(k('enrollRecipients'), '');
+  const [enrollTag, setEnrollTag] = useDraftState(k('enrollTag'), '');
+  const [enrollStage, setEnrollStage] = useDraftState<LeadStage | ''>(k('enrollStage'), '');
 
   const openEnroll = (fu: FollowUp) => { setEnrollFu(fu); setRecipients(''); setEnrollTag(''); setEnrollStage(''); };
 

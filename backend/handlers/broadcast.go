@@ -754,12 +754,12 @@ func runBroadcast(broadcastID, agentID uint, minD, maxD int) {
 				log.Printf("Broadcast %d dijeda saat kirim ke %s: WA terputus", broadcastID, r.Number)
 				return
 			}
-			markRecipient(r.ID, "failed", sendErr.Error())
+			markRecipientAttempt(r.ID, "failed", sendErr.Error(), msg)
 			failed++
 		} else {
 			now := time.Now()
 			database.DB.Model(&models.BroadcastRecipient{}).Where("id = ?", r.ID).
-				Updates(map[string]any{"status": "sent", "sent_at": &now, "error": ""})
+				Updates(map[string]any{"status": "sent", "sent_at": &now, "error": "", "sent_message": msg})
 			sent++
 			sentSinceRest++ // hitung menuju istirahat berkala
 		}
@@ -856,6 +856,15 @@ func waitConnected(agentID uint, max time.Duration) bool {
 func markRecipient(id uint, status, errMsg string) {
 	database.DB.Model(&models.BroadcastRecipient{}).Where("id = ?", id).
 		Updates(map[string]any{"status": status, "error": errMsg})
+}
+
+// markRecipientAttempt mencatat hasil satu percobaan kirim beserta teks final yang
+// dipakai. Dipisah dari markRecipient karena hanya jalur yang sudah benar-benar
+// memanggil WA yang punya pesan untuk disimpan — penerima yang dilewati atau
+// ditolak validasi tidak boleh terlihat seolah pernah menerima kalimat itu.
+func markRecipientAttempt(id uint, status, errMsg, sentMsg string) {
+	database.DB.Model(&models.BroadcastRecipient{}).Where("id = ?", id).
+		Updates(map[string]any{"status": status, "error": errMsg, "sent_message": sentMsg})
 }
 
 func updateBroadcastCounters(broadcastID uint, sent, failed, skipped int) {

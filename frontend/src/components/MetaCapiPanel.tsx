@@ -1,17 +1,16 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import {
-  Alert, Box, Button, CircularProgress, Paper, Stack,
-  Table, TableBody, TableCell, TableHead, TableRow, TextField, Typography,
+  Alert, Autocomplete, Box, Button, Card, CardContent, Chip, CircularProgress,
+  Stack, Table, TableBody, TableCell, TableContainer, TableHead,
+  TableRow, TextField, Typography,
 } from '@mui/material';
 import { useMetaConfig, useSaveMetaConfig, useTestMetaEvent } from '../hooks';
 import PageHeader from './PageHeader';
 import { swalToast } from '../services/swal';
-import { apiErrorMessage } from '../services/errors';
 
-// Meta CAPI (single-tenant) — konversi nyata dari label WhatsApp dilaporkan
-// server-side ke Pixel Meta, lengkap dengan nilai transaksi (value-based ads).
+// Meta CAPI — kirim konversi nyata ke Meta Ads saat label konversi menempel.
 export default function MetaCapiPanel({ agentId }: { agentId: number }) {
-  const { data: cfg, isLoading, isError } = useMetaConfig(agentId);
+  const { data: cfg, isLoading } = useMetaConfig(agentId);
   const saveMeta = useSaveMetaConfig(agentId);
   const testMeta = useTestMetaEvent(agentId);
 
@@ -20,32 +19,18 @@ export default function MetaCapiPanel({ agentId }: { agentId: number }) {
   const [testCode, setTestCode] = useState('');
   const [convLabels, setConvLabels] = useState('');
   const [eventName, setEventName] = useState('Purchase');
-  const [labelEvents, setLabelEvents] = useState('');
-  const [seeded, setSeeded] = useState(false);
+  const [labelEvents, setLabelEvents] = useState<Record<string, string>>({});
+  const [loaded, setLoaded] = useState(false);
 
-  if (cfg && !seeded) {
+  useEffect(() => {
+    if (!cfg || loaded) return;
     setPixelId(cfg.pixel_id || '');
     setTestCode(cfg.test_event_code || '');
     setConvLabels(cfg.conv_labels || '');
     setEventName(cfg.event_name || 'Purchase');
-    const lines = Object.entries(cfg.label_events || {})
-      .map(([k, v]) => `${k}=${v}`).join('\n');
-    setLabelEvents(lines);
-    setSeeded(true);
-  }
-
-  const parseLabelEvents = (raw: string): Record<string, string> => {
-    const out: Record<string, string> = {};
-    for (const line of raw.split('\n')) {
-      const idx = line.indexOf('=');
-      if (idx > 0) {
-        const k = line.slice(0, idx).trim();
-        const v = line.slice(idx + 1).trim();
-        if (k && v) out[k] = v;
-      }
-    }
-    return out;
-  };
+    setLabelEvents(cfg.label_events || {});
+    setLoaded(true);
+  }, [cfg, loaded]);
 
   const save = () => {
     if (!pixelId.trim()) {
@@ -54,91 +39,146 @@ export default function MetaCapiPanel({ agentId }: { agentId: number }) {
     }
     saveMeta.mutate({
       pixel_id: pixelId.trim(),
-      access_token: accessToken,
+      access_token: accessToken, // kosong = pertahankan token lama
       test_event_code: testCode.trim(),
-      conv_labels: convLabels,
+      conv_labels: convLabels.trim(),
       event_name: eventName.trim() || 'Purchase',
-      label_events: parseLabelEvents(labelEvents),
-    } as never, {
-      onSuccess: () => {
-        setAccessToken('');
-        swalToast('Pengaturan Meta CAPI disimpan');
-      },
-      onError: (e) => swalToast(apiErrorMessage(e, 'Gagal menyimpan'), 'error'),
+      label_events: labelEvents,
+    }, {
+      onSuccess: () => { swalToast('Konfigurasi Meta CAPI tersimpan!'); setAccessToken(''); },
+      onError: (err: any) => swalToast(err?.response?.data?.error || 'Gagal menyimpan', 'error'),
     });
   };
 
-  const test = () => {
-    testMeta.mutate(undefined, {
-      onSuccess: () => swalToast('Event uji terkirim ke Meta'),
-      onError: (e) => swalToast(apiErrorMessage(e, 'Event uji gagal'), 'error'),
-    });
-  };
+  const labels = cfg?.available_labels || [];
+  const convLabelIds = convLabels.split(',').map(s => s.trim()).filter(Boolean);
+  const standardEvents = cfg?.standard_events || ['Purchase', 'Lead', 'Contact', 'CompleteRegistration', 'Schedule', 'SubmitApplication'];
 
-  if (isLoading) return <CircularProgress />;
-  if (isError) return <Alert severity="error">Gagal memuat konfigurasi Meta CAPI.</Alert>;
-
-  const stats = cfg?.stats;
   return (
     <Box>
-      <PageHeader
-        title="Meta CAPI"
-        subtitle="Laporkan konversi nyata ke Facebook Ads setiap label konversi menempel — server-side, lengkap dengan nilai transaksi."
-      />
-      <Stack spacing={2}>
-        <Paper variant="outlined" sx={{ p: 3 }}>
-          <Typography variant="h6" sx={{ mb: 2, fontWeight: 800 }}>⚙️ Konfigurasi</Typography>
+      <PageHeader title="Meta CAPI" subtitle="Deteksi konversi nyata dari Meta Ads otomatis via label WhatsApp" />
+
+      <Card variant="outlined" sx={{ mb: 2 }}>
+        <CardContent>
+          <Alert severity="info" sx={{ mb: 2 }}>
+            Cara kerja: isi Pixel ID + Access Token dari Meta Events Manager, lalu pilih label konversi.
+            Setiap kontak yang diberi label tersebut otomatis dikirim sebagai konversi ke Meta Ads.
+          </Alert>
+
           <Stack spacing={2}>
-            <Alert severity="info">
-              Cara mendapatkannya: Facebook Events Manager → Data Sources → pilih Pixel →
-              buka tab <b>Settings</b> → salin <b>Pixel ID</b> dan <b>Access Token</b>.
-              Untuk uji coba, isi <b>Test Event Code</b> agar event tidak mengganggu data iklan asli.
-            </Alert>
-            <TextField label="Pixel ID (Meta)" value={pixelId} onChange={(e) => setPixelId(e.target.value)} fullWidth />
-            <TextField label="Access Token (API Key Meta)" type="password" value={accessToken}
-              onChange={(e) => setAccessToken(e.target.value)} fullWidth
-              placeholder={cfg?.configured ? '••• tersimpan — kosongkan untuk pakai yang lama' : ''} />
-            <TextField label="Test Event Code (opsional, mode test)" value={testCode} onChange={(e) => setTestCode(e.target.value)} fullWidth />
-            <TextField label="Label Konversi (dipisah koma)" value={convLabels}
-              onChange={(e) => setConvLabels(e.target.value)} fullWidth
-              helperText="Label WhatsApp yang dianggap konversi, misal: Transfer, Closing" />
-            <TextField label="Event CAPI" value={eventName} onChange={(e) => setEventName(e.target.value)} fullWidth
-              helperText="cth: Purchase, Lead, CompleteRegistration" />
-            <TextField label="Pemetaan per label (label=Event, satu per baris)" value={labelEvents}
-              onChange={(e) => setLabelEvents(e.target.value)} fullWidth multiline minRows={2}
-              helperText="Opsional. Kosongkan untuk memakai Event CAPI default untuk semua label." />
-            <Stack direction="row" spacing={2}>
-              <Button variant="contained" onClick={save} disabled={saveMeta.isPending}>Simpan</Button>
-              <Button variant="outlined" onClick={test} disabled={testMeta.isPending}>Tes Kirim</Button>
+            <Box sx={{ display: 'flex', gap: 2, flexWrap: 'wrap' }}>
+              <TextField label="Pixel ID (Meta)" value={pixelId} size="small" sx={{ flex: 1, minWidth: 220 }}
+                onChange={e => setPixelId(e.target.value)}
+                helperText="Dari Events Manager → Data Sources" />
+              <TextField label="Event Name" value={eventName} size="small" sx={{ flex: 1, minWidth: 180 }}
+                onChange={e => setEventName(e.target.value)}
+                helperText="cth: Purchase, Lead, CompleteRegistration" />
+            </Box>
+            <TextField label="Access Token (API Key Meta)" type="password" value={accessToken} size="small"
+              onChange={e => setAccessToken(e.target.value)}
+              helperText={cfg?.configured ? '✓ Token sudah tersimpan — isi hanya untuk mengganti.' : 'Dari Events Manager → Settings → Generate Access Token'} />
+            <TextField label="Test Event Code (opsional, mode test)" value={testCode} size="small"
+              onChange={e => setTestCode(e.target.value)} />
+            <TextField label="Label Konversi (dipisah koma)" value={convLabels} size="small"
+              onChange={e => setConvLabels(e.target.value)}
+              helperText="Masukkan ID label (atau klik label di bawah). Contoh: 1,2,3" />
+
+            {labels.length > 0 && (
+              <Box>
+                <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 0.5 }}>
+                  Klik untuk menambah label:
+                </Typography>
+                <Stack direction="row" spacing={0.5} sx={{ flexWrap: 'wrap', gap: 0.5 }}>
+                  {labels.map((l: any) => (
+                    <Chip key={l.label_id} size="small" label={`${l.name} (${l.label_id})`}
+                      onClick={() => {
+                        const cur = convLabels.split(',').map(s => s.trim()).filter(Boolean);
+                        if (!cur.includes(String(l.label_id))) {
+                          setConvLabels([...cur, String(l.label_id)].join(', '));
+                        }
+                      }} />
+                  ))}
+                </Stack>
+              </Box>
+            )}
+
+            {convLabelIds.length > 0 && (
+              <Box>
+                <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 0.5 }}>
+                  Skema pelabelan — pilih event CAPI standar, atau ketik nama event kamu sendiri (dikirim sebagai indikator ke Meta):
+                </Typography>
+                <Stack spacing={1}>
+                  {labels.filter((l: any) => convLabelIds.includes(String(l.label_id))).map((l: any) => (
+                    <Box key={l.label_id} sx={{ display: 'flex', alignItems: 'center', gap: 1.5, flexWrap: 'wrap' }}>
+                      <Typography variant="body2" sx={{ minWidth: 140, fontWeight: 500 }}>{l.name}</Typography>
+                      <Autocomplete
+                        size="small"
+                        freeSolo
+                        options={standardEvents}
+                        value={labelEvents[String(l.label_id)] || eventName}
+                        onInputChange={(_, v) => setLabelEvents(prev => ({ ...prev, [String(l.label_id)]: v || '' }))}
+                        renderInput={(params) => <TextField {...params} label="Event CAPI" />}
+                        sx={{ minWidth: 220 }}
+                      />
+                    </Box>
+                  ))}
+                </Stack>
+              </Box>
+            )}
+
+            <Stack direction="row" spacing={1}>
+              <Button variant="contained" onClick={save} disabled={saveMeta.isPending || isLoading}>
+                {saveMeta.isPending ? <CircularProgress size={16} /> : 'Simpan'}
+              </Button>
+              {cfg?.configured && (
+                <Button variant="outlined" onClick={() => testMeta.mutate()} disabled={testMeta.isPending}>
+                  Tes Kirim Event
+                </Button>
+              )}
             </Stack>
           </Stack>
-        </Paper>
+        </CardContent>
+      </Card>
 
-        <Paper variant="outlined" sx={{ p: 3 }}>
-          <Typography variant="h6" sx={{ mb: 2, fontWeight: 800 }}>📊 Statistik Pengiriman</Typography>
-          <Table size="small">
-            <TableHead>
-              <TableRow>
-                <TableCell>Menunggu</TableCell>
-                <TableCell>Sukses</TableCell>
-                <TableCell>Gagal</TableCell>
-                <TableCell>Event terakhir</TableCell>
-              </TableRow>
-            </TableHead>
-            <TableBody>
-              <TableRow>
-                <TableCell>{stats?.pending ?? 0}</TableCell>
-                <TableCell>{stats?.sent ?? 0}</TableCell>
-                <TableCell>{stats?.failed ?? 0}</TableCell>
-                <TableCell>{stats?.last_event ? `${stats.last_event.event_name} · ${stats.last_event.status}` : '—'}</TableCell>
-              </TableRow>
-            </TableBody>
-          </Table>
-          <Typography variant="caption" color="text.secondary" sx={{ mt: 1, display: 'block' }}>
-            Token disimpan terenkripsi. Nomor pelanggan di-hash sebelum dikirim ke Meta (SHA-256).
-          </Typography>
-        </Paper>
-      </Stack>
+      <Card variant="outlined">
+        <CardContent>
+          <Typography variant="subtitle1" sx={{ fontWeight: 800, mb: 1 }}>Log Event (20 terakhir)</Typography>
+          <TableContainer>
+            <Table size="small">
+              <TableHead>
+                <TableRow>
+                  <TableCell>Waktu</TableCell>
+                  <TableCell>Kontak</TableCell>
+                  <TableCell>Label</TableCell>
+                  <TableCell>Event</TableCell>
+                  <TableCell>Status</TableCell>
+                  <TableCell>Respons</TableCell>
+                </TableRow>
+              </TableHead>
+              <TableBody>
+                {(cfg?.recent_events || []).map((e: any) => (
+                  <TableRow key={e.id}>
+                    <TableCell>{e.sent_at ? new Date(e.sent_at).toLocaleString('id-ID') : '—'}</TableCell>
+                    <TableCell>{e.sender}</TableCell>
+                    <TableCell>{e.label_id}</TableCell>
+                    <TableCell>{e.event_name}</TableCell>
+                    <TableCell>
+                      <Chip size="small" color={e.status === 'sent' ? 'success' : 'error'}
+                        label={e.status === 'sent' ? 'terkirim' : 'gagal'} />
+                    </TableCell>
+                    <TableCell sx={{ maxWidth: 220, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      {e.response}
+                    </TableCell>
+                  </TableRow>
+                ))}
+                {(!cfg?.recent_events || cfg.recent_events.length === 0) && (
+                  <TableRow><TableCell colSpan={6} sx={{ color: 'text.secondary' }}>Belum ada event.</TableCell></TableRow>
+                )}
+              </TableBody>
+            </Table>
+          </TableContainer>
+        </CardContent>
+      </Card>
     </Box>
   );
 }

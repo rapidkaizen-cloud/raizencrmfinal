@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState, type ReactElement, type ReactNode } from 'react';
+import { useDraftState } from '../draft';
 import {
   alpha, Box, Typography, Card, CardContent, Button, Stack, Chip, TextField, Alert,
   CircularProgress, IconButton, Tooltip, Divider, Skeleton,
@@ -378,11 +379,13 @@ export default function StatusPanel({ agentId }: { agentId: number }) {
   const createStatus = useCreateStatus(agentId);
   const cancelStatus = useCancelStatus(agentId);
 
-  const [text, setText] = useState('');
-  const [file, setFile] = useState<File | null>(null);
+  // Panel di-unmount saat pindah tab, jadi isian status disimpan sebagai draft per CS.
+  const k = (name: string) => `status:${agentId}:${name}`;
+  const [text, setText] = useDraftState(k('text'), '');
+  const [file, setFile] = useState<File | null>(null); // File tidak bisa disimpan sebagai draft
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
-  const [mode, setMode] = useState<'now' | 'schedule'>('now');
-  const [runAt, setRunAt] = useState(defaultScheduleValue());
+  const [mode, setMode] = useDraftState<'now' | 'schedule'>(k('mode'), 'now');
+  const [runAt, setRunAt] = useDraftState(k('runAt'), defaultScheduleValue());
   const [error, setError] = useState('');
   const [filter, setFilter] = useState<HistoryFilter>('all');
 

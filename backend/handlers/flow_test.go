@@ -116,3 +116,36 @@ func TestContainsTriggerUsesWordBoundary(t *testing.T) {
 		t.Fatal("pemicu contains harus cocok sebagai kata utuh")
 	}
 }
+
+func TestMatchTriggerMultipleKeywords(t *testing.T) {
+	trigger := "menu, Bantuan , layanan"
+	// Setiap kata kunci harus memicu, tanpa membedakan huruf besar/kecil.
+	for _, text := range []string{"MENU", "halo kak, mau bantuan dong", "Layanan apa saja ya?"} {
+		if !matchTrigger(text, trigger, "contains") {
+			t.Fatalf("pesan %q seharusnya memicu alur", text)
+		}
+	}
+	if matchTrigger("mau tanya harga", trigger, "contains") {
+		t.Fatal("pesan tanpa kata pemicu tidak boleh memicu alur")
+	}
+	// Mode exact/prefix juga harus mengenali semua kata kunci.
+	if !matchTrigger("bantuan", trigger, "exact") || matchTrigger("mau bantuan", trigger, "exact") {
+		t.Fatal("mode persis sama tidak bekerja untuk daftar kata pemicu")
+	}
+	if !matchTrigger("Layanan pengiriman?", trigger, "prefix") {
+		t.Fatal("mode diawali tidak bekerja untuk daftar kata pemicu")
+	}
+}
+
+func TestParseFlowTriggersMerapikanDaftar(t *testing.T) {
+	got := parseFlowTriggers(" menu ,, Menu\nbantuan , ")
+	if len(got) != 2 || got[0] != "menu" || got[1] != "bantuan" {
+		t.Fatalf("daftar kata pemicu tidak dirapikan: %#v", got)
+	}
+	if primaryFlowTrigger("  , halo, menu") != "halo" {
+		t.Fatal("kata pemicu utama harus yang pertama setelah dirapikan")
+	}
+	if primaryFlowTrigger("  ,  ") != "menu" {
+		t.Fatal("kata pemicu utama harus jatuh ke default")
+	}
+}

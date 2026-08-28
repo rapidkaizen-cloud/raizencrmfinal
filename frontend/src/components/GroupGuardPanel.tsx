@@ -1,4 +1,5 @@
-import { useMemo, useState } from 'react';
+import { useMemo } from 'react';
+import { useDraftState } from '../draft';
 import {
   Alert, Avatar, Box, Button, Chip, CircularProgress, Divider, IconButton,
   InputAdornment, Paper, Stack, Tab, Tabs, TextField, ToggleButton,
@@ -23,7 +24,8 @@ import type { WAGroup } from '../types';
 type GroupFilter = 'all' | 'active' | 'needs-admin';
 
 export default function GroupGuardPanel({ agentId }: { agentId: number }) {
-  const [tab, setTab] = useState(0);
+  // Panel di-unmount saat pindah tab, jadi posisi tab & filter disimpan sebagai draft per CS.
+  const [tab, setTab] = useDraftState(`groupguard:${agentId}:tab`, 0);
 
   return (
     <Box>
@@ -50,9 +52,9 @@ export default function GroupGuardPanel({ agentId }: { agentId: number }) {
 
 function GroupList({ agentId }: { agentId: number }) {
   const { data: groups = [], isLoading, isError, refetch, isFetching } = useManagedGroups(agentId);
-  const [editing, setEditing] = useState<WAGroup | null>(null);
-  const [query, setQuery] = useState('');
-  const [filter, setFilter] = useState<GroupFilter>('all');
+  const [editing, setEditing] = useDraftState<WAGroup | null>(`groupguard:${agentId}:editing`, null);
+  const [query, setQuery] = useDraftState(`groupguard:${agentId}:query`, '');
+  const [filter, setFilter] = useDraftState<GroupFilter>(`groupguard:${agentId}:filter`, 'all');
 
   const totals = useMemo(() => ({
     total: groups.length,

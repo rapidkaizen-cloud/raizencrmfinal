@@ -15,6 +15,7 @@ import (
 	"wa-assistant/backend/database"
 	"wa-assistant/backend/handlers"
 	"wa-assistant/backend/license"
+	"wa-assistant/backend/models"
 	"wa-assistant/backend/services"
 	"wa-assistant/backend/ui"
 
@@ -102,6 +103,10 @@ func main() {
 		api.GET("/me", handlers.AuthMiddleware(), handlers.Me)
 		api.PUT("/profile", handlers.AuthMiddleware(), handlers.UpdateProfile)
 		api.PUT("/change-password", handlers.AuthMiddleware(), handlers.ChangePassword)
+		// Default jeda blast per akun. Terbuka untuk semua role: tiap orang mengatur
+		// ritme kirimnya sendiri (id user diambil dari token, bukan dari body).
+		// Nilainya ikut terkirim di GET /me sebagai "blast_delay".
+		api.PUT("/blast-delay", handlers.AuthMiddleware(), handlers.SaveBlastDelay)
 
 		// REST API publik (autentikasi API key per-nomor) untuk integrasi eksternal.
 		v1 := api.Group("/v1", handlers.APIKeyMiddleware())
@@ -148,33 +153,30 @@ func main() {
 			auth.GET("/handoffs", handlers.ListHandoffs)
 			auth.DELETE("/handoffs/:sender", handlers.ResumeHandoff)
 			auth.GET("/chat-history", handlers.ChatHistory)
+			// GET tetap terbuka: dibaca kartu kesiapan di Dashboard (tab yang tetap
+			// terlihat manager/CS). Semua mutasi persona & knowledge versi legacy
+			// pindah ke group authAI di bawah.
 			auth.GET("/settings", handlers.GetSettings)
-			auth.PUT("/settings", handlers.UpdateSettings)
 			auth.GET("/knowledge", handlers.ListKnowledge)
-			auth.POST("/knowledge", handlers.CreateKnowledge)
-			auth.POST("/knowledge/generate", handlers.GenerateKnowledge)
-			auth.POST("/knowledge/import", handlers.ImportKnowledge)
-			auth.PUT("/knowledge/:kid", handlers.UpdateKnowledge)
-			auth.DELETE("/knowledge/:kid", handlers.DeleteKnowledge)
 
 			// Multi-agent (CS).
 			auth.GET("/agents", handlers.ListAgents)
 			auth.GET("/agents-status", handlers.AgentStatuses)
-			auth.POST("/agents", handlers.CreateAgent)
+			// PUT /agents/:id SENGAJA tetap di sini, tidak ikut pindah ke authAkun.
+			// Endpoint yang sama dipakai saklar "Balasan AI" dan "Tandai pesan dibaca
+			// otomatis" di tab Dashboard — tab yang tetap terlihat untuk manager/CS.
+			// Kalau dipindah, manager/CS langsung kena 403 begitu menyalakan AI.
+			// Penyaringan field sensitif (persona/tone untuk fitur "ai", nama CS &
+			// jadwal untuk fitur "akun") dikerjakan di dalam handler UpdateAgent,
+			// bukan di level route ini.
 			auth.PUT("/agents/:id", handlers.UpdateAgent)
-			auth.DELETE("/agents/:id", handlers.DeleteAgent)
 			auth.GET("/agents/:id/wa/status", handlers.GetNumberStatus)
 			auth.POST("/agents/:id/wa/connect", handlers.ConnectNumber)
 			auth.POST("/agents/:id/wa/connect-pairing", handlers.ConnectPairingNumber)
 			auth.POST("/agents/:id/wa/logout", handlers.LogoutNumber)
-			// REST API & webhook per-nomor (kelola key/URL dari dashboard).
-			auth.GET("/agents/:id/api", handlers.GetAPISettings)
-			auth.POST("/agents/:id/api/key", handlers.RotateAPIKey)
-			auth.DELETE("/agents/:id/api/key", handlers.RevokeAPIKey)
-			auth.PUT("/agents/:id/api/webhook", handlers.SaveWebhook)
-			auth.POST("/agents/:id/api/webhook-secret", handlers.RotateWebhookSecret)
-			auth.POST("/agents/:id/api/webhook/test", handlers.TestWebhook)
-			auth.POST("/agents/:id/api/test-message", handlers.TestAPIMessage)
+			// Catatan pindahan: Learning Engine sekarang di group authAI, dan
+			// REST API/webhook per-nomor di group authAkun (lihat di bawah).
+
 			auth.GET("/agents/:id/handoffs", handlers.ListHandoffs)
 			// Pipeline & Label — tahap CRM + aturan pelabelan otomatis (non-SaaS)
 			auth.GET("/agents/:id/crm/pipeline", handlers.GetPipeline)
@@ -199,31 +201,27 @@ func main() {
 			auth.POST("/agents/:id/learning/snapshots/:sid/rollback", handlers.RollbackSnapshot)
 			auth.GET("/agents/:id/learning/config", handlers.GetLearningConfigAPI)
 			auth.PUT("/agents/:id/learning/config", handlers.SaveLearningConfigAPI)
-			// Meta CAPI (konfigurasi pixel + statistik)
-			auth.GET("/agents/:id/meta", handlers.AdminGetMetaTracking)
-			auth.PUT("/agents/:id/meta", handlers.AdminSetMetaTracking)
-			auth.POST("/agents/:id/meta/test", handlers.AdminTestMetaTracking)
+			// Kontrol AI per kontak (CS dari inbox: jeda/lanjutkan AI, pindah ke CS).
+			auth.POST("/agents/:id/contacts/:sender/ai-off", handlers.PauseAIContact)
+			auth.POST("/agents/:id/contacts/:sender/ai-on", handlers.ResumeAIContact)
+			auth.GET("/agents/:id/contacts/:sender/ai-status", handlers.ContactAIStatus)
+			auth.POST("/agents/:id/contacts/:sender/handoff", handlers.ManualHandoffContact)
+
+			// Meta CAPI (label WhatsApp -> event Facebook Ads).
+			auth.GET("/agents/:id/meta", handlers.GetMetaConfig)
+			auth.PUT("/agents/:id/meta", handlers.SaveMetaConfig)
+			auth.POST("/agents/:id/meta/test", handlers.TestMetaEvent)
+			auth.GET("/agents/:id/meta/logs", handlers.MetaConversionLogs)
 			auth.DELETE("/agents/:id/handoffs/:sender", handlers.ResumeHandoff)
 			auth.GET("/agents/:id/chat-history", handlers.ChatHistory)
+			// GET knowledge & status crawl tetap di sini: hook-nya dipanggil top-level
+			// di Dashboard (polling 4 detik) untuk kartu kesiapan, jadi ikut jalan di
+			// semua tab termasuk tab yang masih terlihat manager/CS.
 			auth.GET("/agents/:id/settings", handlers.GetSettings)
-			auth.PUT("/agents/:id/settings", handlers.UpdateSettings)
-			auth.POST("/agents/:id/setup-wizard", handlers.SetupWizard)
 			auth.GET("/agents/:id/knowledge", handlers.ListKnowledge)
-			auth.POST("/agents/:id/knowledge", handlers.CreateKnowledge)
-			auth.POST("/agents/:id/knowledge/generate", handlers.GenerateKnowledge)
-			auth.POST("/agents/:id/knowledge/import", handlers.ImportKnowledge)
-			auth.PUT("/agents/:id/knowledge/:kid", handlers.UpdateKnowledge)
-			auth.DELETE("/agents/:id/knowledge-all", handlers.DeleteAllKnowledge)
-			auth.DELETE("/agents/:id/knowledge/:kid", handlers.DeleteKnowledge)
-
-			// Latih AI dari website: crawl (background) -> pilih halaman -> embed jadi knowledge.
-			auth.POST("/agents/:id/crawl", handlers.StartCrawl)
 			auth.GET("/agents/:id/crawl", handlers.LatestCrawl)
 			auth.GET("/agents/:id/crawl/:jobId", handlers.CrawlStatus)
-			auth.POST("/agents/:id/crawl/:jobId/train", handlers.TrainCrawlPages)
-			auth.POST("/agents/:id/crawl/:jobId/train/stop", handlers.StopTraining)
 			auth.GET("/agents/:id/knowledge-usage", handlers.KnowledgeUsage)
-			auth.POST("/agents/:id/persona/regenerate", handlers.RegeneratePersona)
 
 			// Fitur jualan: simulator, analitik, inbox.
 			auth.POST("/agents/:id/test-chat", handlers.TestChat)
@@ -272,10 +270,8 @@ func main() {
 			auth.DELETE("/agents/:id/products/:pid", handlers.DeleteProduct)
 			auth.POST("/agents/:id/products/:pid/send", handlers.SendProduct)
 			auth.GET("/agents/:id/product-orders", handlers.ListProductOrders)
+			// Daftar form & kiriman form ikut dirender kartu overview Dashboard -> GET tetap terbuka.
 			auth.GET("/agents/:id/ai-forms", handlers.ListAIForms)
-			auth.POST("/agents/:id/ai-forms", handlers.CreateAIForm)
-			auth.PUT("/agents/:id/ai-forms/:fid", handlers.UpdateAIForm)
-			auth.DELETE("/agents/:id/ai-forms/:fid", handlers.DeleteAIForm)
 			auth.GET("/agents/:id/ai-form-submissions", handlers.ListAIFormSubmissions)
 			auth.GET("/agents/:id/broadcast/consent-summary", handlers.BroadcastConsentSummary)
 			auth.POST("/agents/:id/broadcast", handlers.CreateBroadcast)
@@ -315,6 +311,101 @@ func main() {
 			auth.GET("/agents/:id/media-assets", handlers.ListMediaAssets)
 			auth.POST("/agents/:id/media-assets", handlers.UploadMediaAsset)
 			auth.DELETE("/agents/:id/media-assets/:assetId", handlers.DeleteMediaAsset)
+		}
+
+		// authAI = super admin + user yang di-grant fitur "ai".
+		// Isinya semua yang mengubah otak AI: persona/system prompt, knowledge,
+		// crawl website, dan seluruh tab AI Learning. Sengaja hanya mutasi yang
+		// masuk sini; GET yang ikut dipakai kartu kesiapan Dashboard tetap di
+		// group `auth` supaya tab Dashboard tidak error 403 saat dibuka manager/CS.
+		authAI := api.Group("", handlers.AuthMiddleware(), handlers.RequireFeature(models.FeatureAI))
+		{
+			// Persona / system prompt (versi legacy tanpa :id dan versi per-agent).
+			// Catatan: dua route ini nol pemanggil di frontend saat ini — persona
+			// sebenarnya disimpan lewat PUT /agents/:id. Dikunci untuk jaga-jaga.
+			authAI.PUT("/settings", handlers.UpdateSettings)
+			authAI.PUT("/agents/:id/settings", handlers.UpdateSettings)
+
+			// Knowledge versi legacy (tanpa :id).
+			authAI.POST("/knowledge", handlers.CreateKnowledge)
+			authAI.POST("/knowledge/generate", handlers.GenerateKnowledge)
+			authAI.POST("/knowledge/import", handlers.ImportKnowledge)
+			authAI.PUT("/knowledge/:kid", handlers.UpdateKnowledge)
+			authAI.DELETE("/knowledge/:kid", handlers.DeleteKnowledge)
+
+			// Knowledge per-agent + wizard setup cepat.
+			authAI.POST("/agents/:id/setup-wizard", handlers.SetupWizard)
+			authAI.POST("/agents/:id/knowledge", handlers.CreateKnowledge)
+			authAI.POST("/agents/:id/knowledge/generate", handlers.GenerateKnowledge)
+			authAI.POST("/agents/:id/knowledge/import", handlers.ImportKnowledge)
+			authAI.PUT("/agents/:id/knowledge/:kid", handlers.UpdateKnowledge)
+			authAI.DELETE("/agents/:id/knowledge-all", handlers.DeleteAllKnowledge)
+			authAI.DELETE("/agents/:id/knowledge/:kid", handlers.DeleteKnowledge)
+
+			// Latih AI dari website: crawl (background) -> pilih halaman -> embed jadi knowledge.
+			// GET status crawl-nya tetap di group `auth` (dipolling Dashboard).
+			authAI.POST("/agents/:id/crawl", handlers.StartCrawl)
+			authAI.POST("/agents/:id/crawl/:jobId/train", handlers.TrainCrawlPages)
+			authAI.POST("/agents/:id/crawl/:jobId/train/stop", handlers.StopTraining)
+			authAI.POST("/agents/:id/persona/regenerate", handlers.RegeneratePersona)
+
+			// Form layanan (AI Form) — hanya mutasinya, daftar & kirimannya dibaca Dashboard.
+			authAI.POST("/agents/:id/ai-forms", handlers.CreateAIForm)
+			authAI.PUT("/agents/:id/ai-forms/:fid", handlers.UpdateAIForm)
+			authAI.DELETE("/agents/:id/ai-forms/:fid", handlers.DeleteAIForm)
+
+			// --- AI Learning (AI belajar dari chat CS manusia) ---
+			// Tab AI Learning berdiri sendiri dan tidak dipakai tab lain, jadi GET-nya
+			// ikut dikunci penuh.
+			authAI.POST("/agents/:id/learning/run", handlers.StartLearning)
+			authAI.GET("/agents/:id/learning/status", handlers.GetLearningStatus)
+			authAI.GET("/agents/:id/learning/runs", handlers.GetLearningRuns)
+			authAI.GET("/agents/:id/learning/runs/:rid", handlers.GetLearningRun)
+			authAI.GET("/agents/:id/learning/patterns", handlers.GetLearningPatterns)
+			authAI.POST("/agents/:id/learning/patterns/:pid/apply", handlers.ApplyLearningPattern)
+			authAI.POST("/agents/:id/learning/patterns/:pid/reject", handlers.RejectLearningPattern)
+			authAI.POST("/agents/:id/learning/patterns/apply-all", handlers.ApplyAllPatterns)
+			authAI.GET("/agents/:id/learning/snapshots", handlers.GetSnapshots)
+			authAI.POST("/agents/:id/learning/snapshots", handlers.CreateSnapshotAPI)
+			authAI.POST("/agents/:id/learning/snapshots/:sid/rollback", handlers.RollbackSnapshot)
+			authAI.GET("/agents/:id/learning/config", handlers.GetLearningConfigAPI)
+			authAI.PUT("/agents/:id/learning/config", handlers.SaveLearningConfigAPI)
+		}
+
+		// authAkun = super admin + user yang di-grant fitur "akun".
+		// Isinya section Akun: REST API/webhook per-nomor, plus tambah & hapus CS.
+		// Tab Widget tidak punya endpoint sendiri (semuanya dibangun di sisi klien),
+		// jadi tidak ada yang perlu dipindah untuk tab itu.
+		// GET /agents & GET /agents-status WAJIB tetap di group `auth` — dipakai
+		// switcher CS di sidebar dan sumber data tab Dashboard/Pengaturan.
+		authAkun := api.Group("", handlers.AuthMiddleware(), handlers.RequireFeature(models.FeatureAkun))
+		{
+			// BISA DIBALIK: kalau nanti manager/CS boleh menambah & menghapus nomor CS,
+			// cukup pindahkan dua baris ini kembali ke group `auth` (tombolnya di
+			// sidebar & dialog "Kelola CS" — ikut disembunyikan di frontend).
+			authAkun.POST("/agents", handlers.CreateAgent)
+			authAkun.DELETE("/agents/:id", handlers.DeleteAgent)
+
+			// REST API & webhook per-nomor (kelola key/URL dari dashboard).
+			// Eksklusif tab "REST API" -> dikunci penuh termasuk GET-nya.
+			authAkun.GET("/agents/:id/api", handlers.GetAPISettings)
+			authAkun.POST("/agents/:id/api/key", handlers.RotateAPIKey)
+			authAkun.DELETE("/agents/:id/api/key", handlers.RevokeAPIKey)
+			authAkun.PUT("/agents/:id/api/webhook", handlers.SaveWebhook)
+			authAkun.POST("/agents/:id/api/webhook-secret", handlers.RotateWebhookSecret)
+			authAkun.POST("/agents/:id/api/webhook/test", handlers.TestWebhook)
+			authAkun.POST("/agents/:id/api/test-message", handlers.TestAPIMessage)
+		}
+
+		// admin = super admin saja (User.IsSuperAdmin), tanpa bisa di-grant.
+		// Manajemen akun tim: bikin/ubah/hapus user manager & CS beserta fiturnya.
+		admin := api.Group("", handlers.AuthMiddleware(), handlers.RequireSuperAdmin())
+		{
+			admin.GET("/users", handlers.ListUsers)
+			admin.POST("/users", handlers.CreateUser)
+			admin.PUT("/users/:uid", handlers.UpdateUser)
+			admin.POST("/users/:uid/password", handlers.ResetUserPassword)
+			admin.DELETE("/users/:uid", handlers.DeleteUser)
 		}
 	}
 

@@ -1,6 +1,6 @@
-import { useMemo, useState, useRef, type ReactNode } from 'react';
+import { useEffect, useMemo, useState, useRef, Fragment, type ReactNode } from 'react';
 import {
-  Box, Typography, Card, CardContent, TextField, Button, Stack, Alert, Chip,
+  Box, Typography, Card, CardContent, TextField, Button, Stack, Alert, Chip, Collapse,
   Table, TableBody, TableCell, TableHead, TableRow, CircularProgress,
   Dialog, DialogTitle, DialogContent, DialogActions, Divider, useMediaQuery,
   Checkbox, Accordion, AccordionSummary, AccordionDetails, MenuItem,
@@ -19,6 +19,7 @@ import RefreshIcon from '@mui/icons-material/Refresh';
 import FactCheckIcon from '@mui/icons-material/FactCheckOutlined';
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
 import { useCreateBroadcast, useBroadcasts, useBroadcastDetail, useCancelBroadcast, useResumeBroadcast, useCheckNumbers, useAgents, useAgentStatuses, useTestBroadcastRotation, useProducts, type BroadcastRotationTestResult } from '../hooks';
+import { useDraftState } from '../draft';
 import SyncAltIcon from '@mui/icons-material/SyncAltOutlined';
 import { swalToast, swalConfirm } from '../services/swal';
 import RecipientField from './RecipientField';
@@ -26,6 +27,7 @@ import WhatsAppEditor from './WhatsAppEditor';
 import TemplatePicker from './TemplatePicker';
 import PageHeader from './PageHeader';
 import DelayFields from './broadcast/DelayFields';
+import { useBlastDelay } from './broadcast/useBlastDelay';
 import BroadcastProgress from './broadcast/BroadcastProgress';
 import BroadcastQuarantineSummary from './broadcast/BroadcastQuarantineSummary';
 import { defaultBroadcastSafetyForm } from '../services/broadcastSafety';
@@ -115,21 +117,35 @@ function ReviewRow({ label, value, good, warning }: { label: string; value: stri
 export default function BroadcastPanel({ agentId, seed }: { agentId: number; seed?: { value: string; n: number } | null }) {
   const theme = useTheme();
   const mobileDetail = useMediaQuery(theme.breakpoints.down('sm'));
-  const [message, setMessage] = useState('');
-  // Panel di-mount ulang ketika tab dibuka, jadi seed dari Kontak cukup dijadikan nilai awal.
-  const [recipientsText, setRecipientsText] = useState(seed?.value || '');
-  const [minDelay, setMinDelay] = useState(10);
-  const [maxDelay, setMaxDelay] = useState(30);
-  // Istirahat berkala (default pintar): jeda restDuration dtk tiap restEvery pesan. restEvery=0 = mati.
-  const [restEvery, setRestEvery] = useState(25);
-  const [restDuration, setRestDuration] = useState(90);
-  const [file, setFile] = useState<File | null>(null);
-  const [selectedProductId, setSelectedProductId] = useState<number | ''>('');
+  // Panel ini di-unmount saat user pindah tab, jadi isian form disimpan sebagai draft per CS.
+  const k = (name: string) => `broadcast:${agentId}:${name}`;
+  const [message, setMessage] = useDraftState(k('message'), '');
+  const [recipientsText, setRecipientsText] = useDraftState(k('recipients'), '');
+  // Jeda kirim + tombol "Simpan sebagai default": nilai awalnya dari setelan akun
+  // (lihat useBlastDelay), bukan angka mati. Istirahat berkala: jeda restDuration dtk
+  // tiap restEvery pesan; restEvery=0 = mati.
+  const {
+    minDelay, maxDelay, restEvery, restDuration,
+    setMinDelay, setMaxDelay, setRestEvery, setRestDuration,
+    delayProblem, saveDefault, saving: savingDelay, savedAsDefault,
+  } = useBlastDelay(k);
+  const [file, setFile] = useState<File | null>(null); // File tidak bisa disimpan sebagai draft
+  const [selectedProductId, setSelectedProductId] = useDraftState<number | ''>(k('product'), '');
+
+  // Seed dari tab Kontak: isi ulang daftar penerima hanya saat kiriman baru (n berubah),
+  // supaya draft yang sedang diketik tidak ditimpa tiap panel dibuka lagi.
+  const [seedN, setSeedN] = useDraftState(k('seedN'), 0);
+  useEffect(() => {
+    if (seed && seed.n !== seedN) {
+      setRecipientsText(seed.value);
+      setSeedN(seed.n);
+    }
+  }, [seed, seedN, setRecipientsText, setSeedN]);
   const { data: products = [] } = useProducts(agentId);
   // Rotasi nomor: nomor tambahan yang ikut mengirim broadcast ini (selain nomor aktif).
   const { data: agents = [] } = useAgents();
   const { data: statusMap = {} } = useAgentStatuses();
-  const [rotationIds, setRotationIds] = useState<number[]>([]);
+  const [rotationIds, setRotationIds] = useDraftState<number[]>(k('rotationIds'), []);
   const [rotationTestResult, setRotationTestResult] = useState<BroadcastRotationTestResult | null>(null);
   const currentAgent = agents.find(a => a.id === agentId);
   const rotationCandidates = agents.filter(a => a.id !== agentId && statusMap[a.id] === 'connected');
@@ -142,7 +158,15 @@ export default function BroadcastPanel({ agentId, seed }: { agentId: number; see
   const [detailId, setDetailId] = useState<number | null>(null);
   const [detailFilter, setDetailFilter] = useState<'all' | 'sent' | 'failed' | 'skipped' | 'pending'>('all');
   const [detailSearch, setDetailSearch] = useState('');
-  const closeDetail = () => { setDetailId(null); setDetailFilter('all'); setDetailSearch(''); };
+  // Penerima yang barisnya sedang dibuka untuk melihat teks pesan yang ia terima.
+  // Set (bukan satu id) supaya beberapa varian spin bisa dibandingkan berdampingan.
+  const [openMsgIds, setOpenMsgIds] = useState<Set<number>>(new Set());
+  const toggleMsg = (id: number) => setOpenMsgIds(prev => {
+    const next = new Set(prev);
+    if (!next.delete(id)) next.add(id);
+    return next;
+  });
+  const closeDetail = () => { setDetailId(null); setDetailFilter('all'); setDetailSearch(''); setOpenMsgIds(new Set()); };
 
   const createBroadcast = useCreateBroadcast(agentId);
   const cancelBroadcast = useCancelBroadcast(agentId);
@@ -169,11 +193,6 @@ export default function BroadcastPanel({ agentId, seed }: { agentId: number; see
   // eslint-disable-next-line react-hooks/exhaustive-deps -- spinNonce sengaja jadi pemicu acak ulang
   const spinSample = useMemo(() => (HAS_SPIN.test(message) ? spinPreview(message) : ''), [message, spinNonce]);
   const hasLooseSpinText = message.includes('|') && !HAS_SPIN.test(message);
-  const delayProblem = minDelay < 1 || maxDelay < 1
-    ? 'Jeda harus minimal 1 detik'
-    : maxDelay < minDelay
-      ? 'Jeda maksimal harus lebih besar atau sama dengan jeda minimal'
-      : '';
 
   const doSend = async () => {
     const e: Record<string, string> = {};
@@ -538,6 +557,7 @@ export default function BroadcastPanel({ agentId, seed }: { agentId: number; see
                   setMinDelay={setMinDelay} setMaxDelay={setMaxDelay} setRestEvery={setRestEvery} setRestDuration={setRestDuration}
                   error={errors.delay || delayProblem || undefined}
                   onEditDelay={() => { if (errors.delay) setErrors(p => ({ ...p, delay: '' })); }}
+                  onSave={saveDefault} saving={savingDelay} savedAsDefault={savedAsDefault}
                 />
               </Box>
             </Stack>
@@ -690,7 +710,11 @@ export default function BroadcastPanel({ agentId, seed }: { agentId: number; see
                 <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', md: 'minmax(260px, 0.8fr) minmax(0, 1.2fr)' }, gap: 1.5, alignItems: 'start', mt: 1.5 }}>
                   <Box sx={{ minWidth: 0, p: 1.25, border: '1px solid', borderColor: 'divider', borderRadius: 1 }}>
                     <Typography variant="subtitle2" sx={{ fontWeight: 800 }}>Konten Blast</Typography>
-                    <Typography variant="caption" color="text.secondary">Pesan yang dikirim ke penerima.</Typography>
+                    <Typography variant="caption" color="text.secondary">
+                      {HAS_SPIN.test(detail.broadcast.message) || detail.broadcast.message.includes('{nama}')
+                        ? 'Template pesan. Tiap penerima menerima versi yang berbeda — klik baris penerima untuk melihat pesan persisnya.'
+                        : 'Pesan yang dikirim ke penerima.'}
+                    </Typography>
                     <Divider sx={{ my: 1 }} />
                     <Typography variant="body2" sx={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{detail.broadcast.message}</Typography>
                     {detail.broadcast.media_type && (
@@ -759,22 +783,50 @@ export default function BroadcastPanel({ agentId, seed }: { agentId: number; see
                         <TableBody>
                           {shown.map(r => {
                             const cs = detail.rotation?.agents?.find(a => a.id === r.agent_id);
+                            const hasMsg = !!r.sent_message;
+                            const open = openMsgIds.has(r.id);
+                            const cols = detail.rotation?.enabled ? 4 : 3;
                             return (
-                              <TableRow key={r.id}>
-                                <TableCell>+{r.number}</TableCell>
-                                <TableCell>{r.name || '-'}</TableCell>
-                                {detail.rotation?.enabled && (
+                              <Fragment key={r.id}>
+                                <TableRow
+                                  hover={hasMsg}
+                                  onClick={hasMsg ? () => toggleMsg(r.id) : undefined}
+                                  sx={hasMsg ? { cursor: 'pointer', '& > *': { borderBottom: open ? 'none' : undefined } } : undefined}
+                                >
                                   <TableCell>
-                                    <Typography variant="caption" color="text.secondary" noWrap>
-                                      {cs?.name || (r.agent_id ? `#${r.agent_id}` : '—')}
-                                    </Typography>
+                                    <Stack direction="row" sx={{ alignItems: 'center', gap: 0.5 }}>
+                                      {hasMsg && <ExpandMoreIcon fontSize="small" sx={{ color: 'text.secondary', transform: open ? 'rotate(180deg)' : 'none', transition: 'transform .15s' }} />}
+                                      <span>+{r.number}</span>
+                                    </Stack>
                                   </TableCell>
+                                  <TableCell>{r.name || '-'}</TableCell>
+                                  {detail.rotation?.enabled && (
+                                    <TableCell>
+                                      <Typography variant="caption" color="text.secondary" noWrap>
+                                        {cs?.name || (r.agent_id ? `#${r.agent_id}` : '—')}
+                                      </Typography>
+                                    </TableCell>
+                                  )}
+                                  <TableCell align="right">
+                                    <Chip size="small" label={RCP_LABEL[r.status] ?? r.status} color={RCP_COLOR[r.status] ?? 'default'} />
+                                    {r.error && <Typography variant="caption" color={r.status === 'pending' ? 'warning.main' : 'error'} sx={{ display: 'block' }}>{r.error}</Typography>}
+                                  </TableCell>
+                                </TableRow>
+                                {hasMsg && (
+                                  <TableRow>
+                                    <TableCell colSpan={cols} sx={{ py: 0, borderBottom: open ? undefined : 'none' }}>
+                                      <Collapse in={open} unmountOnExit>
+                                        <Box sx={{ my: 1, p: 1, bgcolor: 'action.hover', borderRadius: 1 }}>
+                                          <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 0.5 }}>
+                                            Pesan yang diterima nomor ini
+                                          </Typography>
+                                          <Typography variant="body2" sx={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{r.sent_message}</Typography>
+                                        </Box>
+                                      </Collapse>
+                                    </TableCell>
+                                  </TableRow>
                                 )}
-                                <TableCell align="right">
-                                  <Chip size="small" label={RCP_LABEL[r.status] ?? r.status} color={RCP_COLOR[r.status] ?? 'default'} />
-                                  {r.error && <Typography variant="caption" color={r.status === 'pending' ? 'warning.main' : 'error'} sx={{ display: 'block' }}>{r.error}</Typography>}
-                                </TableCell>
-                              </TableRow>
+                              </Fragment>
                             );
                           })}
                         </TableBody>
@@ -783,20 +835,37 @@ export default function BroadcastPanel({ agentId, seed }: { agentId: number; see
                     <Stack spacing={0.75} sx={{ display: { xs: 'flex', sm: 'none' }, maxHeight: '44svh', overflowY: 'auto', pr: 0.25 }}>
                       {shown.map(r => {
                         const cs = detail.rotation?.agents?.find(a => a.id === r.agent_id);
+                        const hasMsg = !!r.sent_message;
+                        const open = openMsgIds.has(r.id);
                         return (
-                          <Stack key={r.id} direction="row" sx={{ alignItems: 'flex-start', justifyContent: 'space-between', gap: 1, p: 1, border: '1px solid', borderColor: 'divider', borderRadius: 1 }}>
-                            <Box sx={{ minWidth: 0 }}>
-                              <Typography variant="body2" sx={{ fontWeight: 700 }}>+{r.number}</Typography>
-                              <Typography variant="caption" color="text.secondary">{r.name || 'Tanpa nama'}</Typography>
-                              {detail.rotation?.enabled && (
-                                <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
-                                  CS: {cs?.name || (r.agent_id ? `#${r.agent_id}` : '—')}
-                                </Typography>
-                              )}
-                              {r.error && <Typography variant="caption" color={r.status === 'pending' ? 'warning.main' : 'error'} sx={{ display: 'block' }}>{r.error}</Typography>}
-                            </Box>
-                            <Chip size="small" label={RCP_LABEL[r.status] ?? r.status} color={RCP_COLOR[r.status] ?? 'default'} sx={{ flexShrink: 0 }} />
-                          </Stack>
+                          <Box key={r.id} onClick={hasMsg ? () => toggleMsg(r.id) : undefined}
+                            sx={{ p: 1, border: '1px solid', borderColor: 'divider', borderRadius: 1, cursor: hasMsg ? 'pointer' : 'default' }}>
+                            <Stack direction="row" sx={{ alignItems: 'flex-start', justifyContent: 'space-between', gap: 1 }}>
+                              <Box sx={{ minWidth: 0 }}>
+                                <Typography variant="body2" sx={{ fontWeight: 700 }}>+{r.number}</Typography>
+                                <Typography variant="caption" color="text.secondary">{r.name || 'Tanpa nama'}</Typography>
+                                {detail.rotation?.enabled && (
+                                  <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
+                                    CS: {cs?.name || (r.agent_id ? `#${r.agent_id}` : '—')}
+                                  </Typography>
+                                )}
+                                {r.error && <Typography variant="caption" color={r.status === 'pending' ? 'warning.main' : 'error'} sx={{ display: 'block' }}>{r.error}</Typography>}
+                                {hasMsg && (
+                                  <Typography variant="caption" color="primary" sx={{ display: 'block', mt: 0.25 }}>
+                                    {open ? 'Sembunyikan pesan' : 'Lihat pesan yang diterima'}
+                                  </Typography>
+                                )}
+                              </Box>
+                              <Chip size="small" label={RCP_LABEL[r.status] ?? r.status} color={RCP_COLOR[r.status] ?? 'default'} sx={{ flexShrink: 0 }} />
+                            </Stack>
+                            {hasMsg && (
+                              <Collapse in={open} unmountOnExit>
+                                <Box sx={{ mt: 1, p: 1, bgcolor: 'action.hover', borderRadius: 1 }}>
+                                  <Typography variant="body2" sx={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{r.sent_message}</Typography>
+                                </Box>
+                              </Collapse>
+                            )}
+                          </Box>
                         );
                       })}
                     </Stack>

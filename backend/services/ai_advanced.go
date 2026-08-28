@@ -108,21 +108,15 @@ PRIORITAS FAKTA (wajib, tidak bisa diganti persona):
 
 // selectKnowledgeAdvanced = retrieval hybrid multi-sinyal + dedupe + resolusi konflik angka.
 // Mode: none | keyword | semantic | hybrid | hybrid_conflict_resolved
-func selectKnowledgeAdvanced(msg string, items []KBItem) ([]models.Knowledge, string, float64) {
+// qv = vektor query bersama satu pesan (nil → semantic dilewati, keyword tetap jalan).
+func selectKnowledgeAdvanced(msg string, items []KBItem, qv *queryVector) ([]models.Knowledge, string, float64) {
 	if len(items) == 0 {
 		return nil, "none", 0
 	}
 	qTokens := tokenizeQuery(msg)
-	hasEmbed := EmbeddingEnabled()
 
-	var qVec []float32
-	if hasEmbed {
-		if vec, err := Embed(msg); err == nil {
-			qVec = vec
-		} else {
-			log.Printf("Embedding: query gagal di advanced select, lanjut keyword: %v", err)
-		}
-	}
+	// Dihitung lazily & dipakai ulang oleh retrieval katalog produk di pesan yang sama.
+	qVec := qv.Vec()
 
 	ranked := make([]scoredKnowledgeAdv, 0, len(items))
 	for _, it := range items {

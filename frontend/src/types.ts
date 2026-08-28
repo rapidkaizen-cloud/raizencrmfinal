@@ -247,6 +247,8 @@ export interface BroadcastRecipient {
   agent_id?: number;
   status: string; // pending, sent, failed, skipped
   error: string;
+  /** Teks final yang dikirim ke penerima ini (spin sudah dipilih, {nama} sudah terisi). Kosong bila belum pernah dicoba kirim. */
+  sent_message?: string;
   sent_at: string | null;
 }
 
@@ -530,9 +532,79 @@ export interface User {
   name: string;
   username: string;
   email: string;
+  phone?: string;
   role: string;
   is_super_admin: boolean;
   tenant_id: number | null;
+  active?: boolean;    // false = akun dinonaktifkan, tidak bisa login
+  features?: string[]; // fitur ekstra yang di-grant super admin
+  blast_delay?: BlastDelay; // default jeda blast milik akun ini
+}
+
+// BlastDelay = default ritme kirim blast, disimpan PER AKUN (bukan per nomor CS):
+// satu CS bisa memegang beberapa nomor dan ritmenya mengikuti orangnya.
+export interface BlastDelay {
+  min_delay: number;
+  max_delay: number;
+  rest_every: number;    // 0 = istirahat berkala dimatikan
+  rest_duration: number;
+}
+
+// Nilai bawaan, harus sama dengan konstanta DefaultBlast* di backend/models.
+export const BLAST_DELAY_DEFAULT: BlastDelay = {
+  min_delay: 10,
+  max_delay: 30,
+  rest_every: 25,
+  rest_duration: 90,
+};
+
+// Cache lokal jeda blast supaya nilai awal form sudah benar pada render pertama —
+// tanpa ini form sempat menampilkan angka bawaan dulu sebelum /me selesai dimuat.
+const BLAST_DELAY_KEY = 'wai_blast_delay';
+
+export function readBlastDelayCache(): BlastDelay {
+  try {
+    const raw = localStorage.getItem(BLAST_DELAY_KEY);
+    if (!raw) return BLAST_DELAY_DEFAULT;
+    const v = JSON.parse(raw) as Partial<BlastDelay>;
+    return {
+      min_delay: Number(v.min_delay) || BLAST_DELAY_DEFAULT.min_delay,
+      max_delay: Number(v.max_delay) || BLAST_DELAY_DEFAULT.max_delay,
+      // rest_every boleh 0 (istirahat dimatikan), jadi tidak boleh pakai `|| default`.
+      rest_every: Number.isFinite(Number(v.rest_every)) ? Number(v.rest_every) : BLAST_DELAY_DEFAULT.rest_every,
+      rest_duration: Number(v.rest_duration) || BLAST_DELAY_DEFAULT.rest_duration,
+    };
+  } catch {
+    return BLAST_DELAY_DEFAULT; // mode privat / storage diblokir
+  }
+}
+
+export function writeBlastDelayCache(d: BlastDelay) {
+  try {
+    localStorage.setItem(BLAST_DELAY_KEY, JSON.stringify(d));
+  } catch {
+    // storage penuh/diblokir: form tetap jalan, cuma nilai awalnya kembali ke bawaan.
+  }
+}
+
+// Nama fitur ekstra, harus sama persis dengan konstanta di backend (models.FeatureAI/FeatureAkun).
+export const FEATURE_AI = 'ai';
+export const FEATURE_AKUN = 'akun';
+
+// Label role untuk ditampilkan di UI.
+// Super admin lama di DB masih memakai role "admin", jadi ikut dipetakan ke "Super Admin".
+export const ROLE_LABEL: Record<string, string> = {
+  superadmin: 'Super Admin',
+  admin: 'Super Admin',
+  manager: 'Manager',
+  cs: 'CS',
+};
+
+// hasFeature mengecek apakah user boleh memakai satu fitur. Super admin selalu boleh.
+export function hasFeature(u: User | null, f: string): boolean {
+  if (!u) return false;
+  if (u.is_super_admin) return true;
+  return (u.features || []).includes(f);
 }
 
 export function currentUser(): User | null {
@@ -800,17 +872,28 @@ export interface MetaStats {
   last_event?: { event_name: string; status: string };
 }
 
+// Log event CAPI yang sudah dikirim (GET /agents/:id/meta -> recent_events).
+export interface MetaConversionLog {
+  id: number;
+  agent_id: number;
+  sender: string;
+  label_id: string;
+  event_name: string;
+  status: string; // sent / failed
+  response: string;
+  sent_at: string;
+}
+
 export interface MetaConfigData {
-  allowed: boolean;
-  enabled: boolean;
   pixel_id: string;
-  graph_version: string;
+  configured: boolean; // access token sudah tersimpan (token tidak pernah dikirim balik)
   test_event_code: string;
-  configured: boolean;
   conv_labels: string;
   event_name: string;
   label_events: Record<string, string>;
-  stats?: MetaStats;
+  standard_events: string[];
+  recent_events: MetaConversionLog[];
+  available_labels: LabelInfo[];
 }
 
 // --- Pipeline & Label (single-tenant) ---

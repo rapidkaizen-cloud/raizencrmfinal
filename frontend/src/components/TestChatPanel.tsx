@@ -1,4 +1,5 @@
-import { useState, Fragment } from 'react';
+import { Fragment } from 'react';
+import { useDraftState } from '../draft';
 import { Box, Typography, Card, CardContent, TextField, IconButton, Stack, Chip, CircularProgress } from '@mui/material';
 import SendIcon from '@mui/icons-material/Send';
 import { useTestChat } from '../hooks';
@@ -16,8 +17,9 @@ function renderWithLinks(text: string) {
 }
 
 export default function TestChatPanel({ agentId }: { agentId: number }) {
-  const [msgs, setMsgs] = useState<Msg[]>([]);
-  const [input, setInput] = useState('');
+  // Panel di-unmount saat pindah tab, jadi percakapan simulasi & kotak ketik ditahan sebagai draft.
+  const [msgs, setMsgs] = useDraftState<Msg[]>(`testchat:${agentId}:msgs`, []);
+  const [input, setInput] = useDraftState(`testchat:${agentId}:input`, '');
   const testChat = useTestChat(agentId);
 
   const send = async () => {

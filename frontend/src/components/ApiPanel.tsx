@@ -1,4 +1,5 @@
 import { useMemo, useState, type ReactNode } from 'react';
+import { useDraftState } from '../draft';
 import {
   Accordion, AccordionDetails, AccordionSummary, Alert, Box, Button, Chip,
   CircularProgress, Divider, FormControl, IconButton, InputAdornment, InputLabel,
@@ -468,13 +469,16 @@ export default function ApiPanel({ agentId, onOpenDashboard }: { agentId: number
   const [search, setSearch] = useState('');
   const [category, setCategory] = useState<(typeof CATEGORIES)[number]>('Semua');
   const [expanded, setExpanded] = useState<string | false>('send-message');
-  const [webhookUrl, setWebhookUrl] = useState('');
-  const [urlDirty, setUrlDirty] = useState(false);
+  // Panel di-unmount saat pindah tab, jadi isian form disimpan sebagai draft per CS.
+  // API key & webhook secret sengaja tidak ikut disimpan.
+  const k = (key: string) => `api:${agentId}:${key}`;
+  const [webhookUrl, setWebhookUrl] = useDraftState(k('webhookUrl'), '');
+  const [urlDirty, setUrlDirty] = useDraftState(k('urlDirty'), false);
   const [newKey, setNewKey] = useState('');
   const [newSecret, setNewSecret] = useState('');
   const [webhookExample, setWebhookExample] = useState<'Node.js' | 'PHP'>('Node.js');
-  const [testTo, setTestTo] = useState('');
-  const [testText, setTestText] = useState('Uji REST API SlaluDiskon — pesan dari dashboard.');
+  const [testTo, setTestTo] = useDraftState(k('testTo'), '');
+  const [testText, setTestText] = useDraftState(k('testText'), 'Uji REST API SlaluDiskon — pesan dari dashboard.');
   const [testResult, setTestResult] = useState<string>('');
   const urlValue = urlDirty ? webhookUrl : (settings?.webhook_url ?? '');
   const apiReady = !!settings?.has_key && !!settings?.connected;

@@ -1,6 +1,7 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import api from './services/api';
-import type { Analytics, AIMetrics, Contact, ChatMsg, ConversationBrief, Broadcast, BroadcastDetailData, BroadcastSafetyForm, BroadcastConsentSummary, WAGroup, GroupGuardConfig, GroupModerationLog, LabelInfo, ScheduledMessage, AutoReply, Template, SavedContact, SavedContactsResp, LeadStage, FollowUp, Agent, KnowledgeItem, Handoff, CrawlJob, CrawlPage, KnowledgeUsage, ScheduledStatus, ApiSettings, Flow, Product, ProductOrder, AIForm, AIFormSubmission, MediaAsset, LearningStatus, LearningScore, LearningRun, LearningRunDetail, LearningPattern, LearningSnapshot, LearningConfig, MetaConfigData, LeadStageDef, LabelRule, PipelineData } from './types';
+import { writeBlastDelayCache } from './types';
+import type { Analytics, AIMetrics, Contact, ChatMsg, ConversationBrief, Broadcast, BroadcastDetailData, BroadcastSafetyForm, BroadcastConsentSummary, WAGroup, GroupGuardConfig, GroupModerationLog, LabelInfo, ScheduledMessage, AutoReply, Template, SavedContact, SavedContactsResp, LeadStage, FollowUp, Agent, KnowledgeItem, Handoff, CrawlJob, CrawlPage, KnowledgeUsage, ScheduledStatus, ApiSettings, Flow, Product, ProductOrder, AIForm, AIFormSubmission, MediaAsset, LearningStatus, LearningScore, LearningRun, LearningRunDetail, LearningPattern, LearningSnapshot, LearningConfig, MetaConfigData, LeadStageDef, LabelRule, PipelineData, User, BlastDelay } from './types';
 
 type ContactList = { number: string; name: string }[];
 
@@ -1354,5 +1355,116 @@ export function useTestLabelRules(agentId: number) {
     mutationFn: async (text: string) =>
       (await api.post(`/agents/${agentId}/crm/pipeline/rules/test`, { text })).data as
       { matched: { id: number; name: string; action_stage: string; action_wa_label: string }[]; count: number },
+  });
+}
+
+// Kontrol AI per kontak (dipakai CS dari inbox).
+export function usePauseAIContact(agentId: number) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (sender: string) =>
+      (await api.post(`/agents/${agentId}/contacts/${encodeURIComponent(sender)}/ai-off`)).data.data,
+    onSuccess: (_d, sender) => {
+      qc.invalidateQueries({ queryKey: ['conversation', agentId, sender] });
+      qc.invalidateQueries({ queryKey: ['contacts', agentId] });
+    },
+  });
+}
+
+export function useResumeAIContact(agentId: number) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (sender: string) =>
+      (await api.post(`/agents/${agentId}/contacts/${encodeURIComponent(sender)}/ai-on`)).data.data,
+    onSuccess: (_d, sender) => {
+      qc.invalidateQueries({ queryKey: ['conversation', agentId, sender] });
+      qc.invalidateQueries({ queryKey: ['contacts', agentId] });
+    },
+  });
+}
+
+export function useManualHandoffContact(agentId: number) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (sender: string) =>
+      (await api.post(`/agents/${agentId}/contacts/${encodeURIComponent(sender)}/handoff`)).data.data,
+    onSuccess: (_d, sender) => {
+      qc.invalidateQueries({ queryKey: ['conversation', agentId, sender] });
+      qc.invalidateQueries({ queryKey: ['handoffs', agentId] });
+    },
+  });
+}
+
+// ---- Akun & tim (manajemen user, khusus super admin) ----
+
+// Payload form akun. Password hanya dipakai saat membuat akun baru.
+export type UserPayload = Partial<User> & { password?: string };
+
+// Profil user yang sedang login. GET /me membalas objek user langsung (tidak dibungkus {data:...}).
+export function useMe() {
+  return useQuery<User>({
+    queryKey: ['me'],
+    queryFn: async () => (await api.get('/me')).data,
+    staleTime: 60_000,
+  });
+}
+
+export function useUsers() {
+  return useQuery<User[]>({
+    queryKey: ['users'],
+    queryFn: async () => (await api.get('/users')).data.data,
+  });
+}
+
+export function useCreateUser() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (u: UserPayload) => (await api.post('/users', u)).data,
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['users'] }),
+  });
+}
+
+export function useUpdateUser() {
+  const qc = useQueryClient();
+  return useMutation({
+    // id dipisah dari body supaya password tidak ikut terkirim lewat endpoint ini.
+    mutationFn: async ({ id, ...body }: UserPayload & { id: number }) =>
+      (await api.put(`/users/${id}`, body)).data,
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['users'] }),
+  });
+}
+
+export function useResetUserPassword() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ id, new_password }: { id: number; new_password: string }) =>
+      (await api.post(`/users/${id}/password`, { new_password })).data,
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['users'] }),
+  });
+}
+
+export function useDeleteUser() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (id: number) => (await api.delete(`/users/${id}`)).data,
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['users'] }),
+  });
+}
+
+// ---- Jeda blast (default per akun, dipakai tab Blast & Jadwal Blast) ----
+
+/**
+ * Simpan default jeda blast milik akun yang sedang login.
+ * Nilai tersimpan ikut terbawa di GET /me sebagai `blast_delay`, dan di-cache ke
+ * localStorage supaya form sudah menampilkan angka yang benar pada render pertama.
+ */
+export function useSaveBlastDelay() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (d: BlastDelay) => (await api.put('/blast-delay', d)).data.data as BlastDelay,
+    onSuccess: (saved) => {
+      writeBlastDelayCache(saved);
+      qc.invalidateQueries({ queryKey: ['me'] });
+    },
   });
 }

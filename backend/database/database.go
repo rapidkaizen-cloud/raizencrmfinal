@@ -8,8 +8,8 @@ import (
 	"wa-assistant/backend/config"
 	"wa-assistant/backend/models"
 
-	"golang.org/x/crypto/bcrypt"
 	sqlite "github.com/glebarez/sqlite"
+	"golang.org/x/crypto/bcrypt"
 	"gorm.io/driver/mysql"
 	"gorm.io/gorm"
 )
@@ -78,6 +78,7 @@ func Init() {
 		&models.Broadcast{}, &models.BroadcastRecipient{}, &models.OptOut{}, &models.ContactConsent{},
 		&models.ScheduledMessage{}, &models.ScheduledStatus{}, &models.Label{}, &models.ChatLabel{}, &models.AutoReply{},
 		&models.Flow{}, &models.FlowSession{}, &models.OTPCode{},
+		&models.MetaConversion{},
 		&models.Template{},
 		&models.FollowUp{}, &models.FollowUpStep{}, &models.FollowUpEnrollment{},
 		&models.Product{}, &models.ProductCheckoutSession{}, &models.ProductOrder{},
@@ -96,6 +97,7 @@ func Init() {
 	)
 
 	backfillKnowledgeCharCount()
+	backfillUserActive()
 	recoverStuckCrawlJobs()
 	seedSuperAdmin()
 	seedDefaultTenant()
@@ -129,6 +131,30 @@ func backfillKnowledgeCharCount() {
 	}
 	if len(rows) > 0 {
 		log.Printf("Backfill char_count untuk %d knowledge lama", len(rows))
+	}
+}
+
+// rbacBackfillActiveKey = penanda di tabel AppSetting supaya backfill kolom `active`
+// hanya pernah dijalankan SEKALI seumur hidup instalasi.
+const rbacBackfillActiveKey = "rbac_backfill_active_v1"
+
+// backfillUserActive menyalakan kolom `active` untuk user LAMA yang sudah ada sebelum
+// fitur RBAC diperkenalkan, supaya mereka tidak ikut terkunci saat kolom baru dibuat.
+// Sekali jalan saja (ditandai di AppSetting): setelah penanda tersimpan, user yang
+// sengaja dinonaktifkan super admin TIDAK akan pernah diaktifkan lagi oleh backfill ini.
+func backfillUserActive() {
+	if GetAppSetting(rbacBackfillActiveKey, "") != "" {
+		return // sudah pernah dijalankan
+	}
+	res := DB.Model(&models.User{}).Where("active = ? OR active IS NULL", false).Update("active", true)
+	if res.Error != nil {
+		// Gagal → jangan pasang penanda, biar dicoba lagi saat restart berikutnya.
+		log.Printf("Backfill RBAC active gagal: %v", res.Error)
+		return
+	}
+	SetAppSetting(rbacBackfillActiveKey, time.Now().Format(time.RFC3339))
+	if res.RowsAffected > 0 {
+		log.Printf("Backfill RBAC: %d user lama diset aktif", res.RowsAffected)
 	}
 }
 
@@ -169,7 +195,7 @@ func seedSuperAdmin() {
 	hash, _ := bcrypt.GenerateFromPassword([]byte(pw), bcrypt.DefaultCost)
 	DB.Create(&models.User{
 		Name: "Super Admin", Username: username, Email: "super@wa-assistant.local",
-		Password: string(hash), IsSuperAdmin: true, Role: "admin",
+		Password: string(hash), IsSuperAdmin: true, Role: models.RoleSuperAdmin, Active: true,
 	})
 	log.Printf("Seeder: super admin '%s' dibuat", username)
 }

@@ -50,11 +50,14 @@ func AnalyzeCustomerImage(agentID uint, persona, tone, caption, instruction, mim
 		query = "pelanggan mengirim gambar untuk diperiksa"
 	}
 
+	// Satu vektor query untuk produk + knowledge (teks query-nya sama).
+	queryVec := newQueryVector(query)
+
 	var knowledge strings.Builder
-	if productContext, _ := productKnowledgeContext(agentID, query); productContext != "" {
+	if productContext, _ := productKnowledgeContext(agentID, query, queryVec); productContext != "" {
 		knowledge.WriteString(productContext)
 	}
-	if relevant, _, _ := searchKnowledge(agentID, query); len(relevant) > 0 {
+	if relevant, _, _ := searchKnowledge(agentID, query, queryVec); len(relevant) > 0 {
 		knowledge.WriteString("\n\nKNOWLEDGE BISNIS YANG RELEVAN:\n")
 		for _, item := range relevant {
 			knowledge.WriteString("Q: " + item.Question + "\nA: " + item.Answer + "\n")

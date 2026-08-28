@@ -22,7 +22,7 @@ type Broadcast struct {
 	AgentID  uint `gorm:"index;not null" json:"agent_id"` // nomor utama (pertama di pool); dipakai untuk klaim & log
 	// AgentIDs = daftar nomor (agent) yang ikut rotasi, JSON array mis. "[12,18,5]". Kosong =
 	// broadcast satu-nomor (pakai AgentID saja). Penerima dibagi sticky antar nomor pool ini.
-	AgentIDs           string `gorm:"type:text" json:"agent_ids,omitempty"`
+	AgentIDs string `gorm:"type:text" json:"agent_ids,omitempty"`
 	// QuarantineJSON = status karantina nomor selama rotasi (alasan, kode WA, cooldown).
 	// Dipersist agar resume setelah wa_restricted tidak langsung memaksa nomor yang baru saja kena restriksi.
 	QuarantineJSON     string `gorm:"type:text" json:"quarantine_json,omitempty"`
@@ -75,10 +75,16 @@ type BroadcastRecipient struct {
 	Number string `gorm:"size:64" json:"number"`
 	Name   string `json:"name"`
 	// AgentID = nomor (agent) yang mengirim penerima ini. Untuk rotasi nomor.
-	AgentID uint       `gorm:"index" json:"agent_id"`
-	Status  string     `gorm:"size:16;default:pending" json:"status"` // pending, sent, failed, skipped
-	Error   string     `json:"error"`
-	SentAt  *time.Time `json:"sent_at"`
+	AgentID uint   `gorm:"index" json:"agent_id"`
+	Status  string `gorm:"size:16;default:pending" json:"status"` // pending, sent, failed, skipped
+	Error   string `json:"error"`
+	// SentMessage = teks final yang benar-benar dikirim ke penerima ini, yaitu hasil
+	// spin ({a|b}) dan penggantian {nama}. Template mentahnya ada di Broadcast.Message;
+	// kolom ini yang menjawab "orang ini sebenarnya menerima kalimat apa?".
+	// Diisi saat percobaan kirim (sukses maupun gagal), kosong untuk penerima
+	// pending/skipped karena pesannya memang belum pernah dirakit.
+	SentMessage string     `gorm:"type:text" json:"sent_message"`
+	SentAt      *time.Time `json:"sent_at"`
 }
 
 // OptOut = kontak yang minta berhenti menerima pesan (balas STOP/BERHENTI).
