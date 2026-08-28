@@ -148,13 +148,22 @@ func processLearningRun(runID, agentID uint, startDate, endDate *time.Time) {
 	run.StyleProfile = string(styleJSON)
 
 	// 3. Pola global (semua chat CS manusia).
+	// pesanGagal menyimpan sebab kegagalan terakhir supaya run yang selesai dengan
+	// 0 pola tetap bisa menjelaskan diri sendiri di rekap, bukan cuma di log server.
+	var pesanGagal string
 	patterns, err := extractPatterns(agentID, humanChats, styleProfile)
 	if err != nil {
+		pesanGagal = err.Error()
 		log.Printf("Learning: gagal ekstrak pola global: %v (lanjut)", err)
 	}
 	savePatterns(run.ID, agentID, "", "", "human", patterns)
 
 	// 4. Pola per-label — pelajari SEMUA label & cara penanganannya menuju closing.
+	// Satu agent bisa punya belasan label dan tiap label = satu panggilan AI. Kalau
+	// yang bermasalah adalah AI-nya (model, kuota, key), meneruskan seluruh daftar
+	// cuma menghabiskan puluhan menit tanpa satu pola pun. Karena itu dihentikan
+	// setelah 3 kegagalan beruntun.
+	gagalBeruntun := 0
 	for _, l := range agentLabels(agentID) {
 		labeled := loadLabeledHumanChats(agentID, l.LabelID, startDate, endDate)
 		if len(labeled) < 3 {
@@ -162,9 +171,16 @@ func processLearningRun(runID, agentID uint, startDate, endDate *time.Time) {
 		}
 		lp, err := extractLabelPatterns(agentID, l.Name, labeled)
 		if err != nil {
+			pesanGagal = err.Error()
+			gagalBeruntun++
 			log.Printf("Learning: label %q gagal: %v", l.Name, err)
+			if gagalBeruntun >= 3 {
+				log.Printf("Learning: 3 label gagal beruntun, sisa label dilewati (run %d)", run.ID)
+				break
+			}
 			continue
 		}
+		gagalBeruntun = 0
 		savePatterns(run.ID, agentID, l.LabelID, l.Name, "human", lp)
 	}
 
@@ -175,6 +191,7 @@ func processLearningRun(runID, agentID uint, startDate, endDate *time.Time) {
 		aiChats := loadAISuccessChats(agentID, startDate, endDate)
 		if len(aiChats) >= 3 {
 			if aiPatterns, aerr := extractPatterns(agentID, aiChats, styleProfile); aerr != nil {
+				pesanGagal = aerr.Error()
 				log.Printf("Learning: ekstrak pola AI-success gagal: %v (lanjut)", aerr)
 			} else {
 				savePatterns(run.ID, agentID, "", "", "ai_success", aiPatterns)
@@ -204,6 +221,9 @@ func processLearningRun(runID, agentID uint, startDate, endDate *time.Time) {
 
 	// 7. Rekap hasil — keterangan apa saja yg dipelajari/diterapkan AI.
 	run.Summary = buildRunSummary(run, int(labeledCount), appliedCount, cfg.AutoApply)
+	if run.PatternCount == 0 && pesanGagal != "" {
+		run.Summary += "\nTidak ada pola yang berhasil diekstrak. Sebab terakhir: " + pesanGagal
+	}
 	database.DB.Save(&run)
 }
 
