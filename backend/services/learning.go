@@ -20,6 +20,51 @@ import (
 // teknik closing, penggunaan emoji, dan frasa efektif.
 // Hasil pembelajaran bisa di-review dan diterapkan ke knowledge base + persona.
 
+// aiComplete dipisah jadi variabel supaya jalur retry di bawah bisa diuji tanpa jaringan.
+var aiComplete = CreateAICompletion
+
+// budgetJSON = jatah token bertingkat untuk permintaan JSON ke AI.
+var budgetJSON = []int{3000, 8000}
+
+// aiJSONInto memanggil AI, membersihkan pagar ```json, lalu mengurai hasilnya ke out.
+//
+// Budget token dinaikkan bertahap dan hasil kosong/terpotong dicoba ulang. Model
+// DeepSeek generasi baru memakai sebagian jatah token untuk reasoning internal,
+// jadi budget yang kelihatan longgar bisa habis sebelum satu karakter JSON pun
+// tertulis: API tetap membalas 200 dengan content kosong dan finish_reason
+// "length". Tanpa penanganan ini, pesan yang sampai ke user berbunyi
+// "unexpected end of JSON input (raw: )" yang tidak menjelaskan apa pun.
+// Pola yang sama sudah dipakai classifyCRMLead di crm_classifier.go.
+func aiJSONInto(messages []openai.ChatCompletionMessage, temperature float32, budgets []int, out any) error {
+	var lastErr error
+	for attempt, budget := range budgets {
+		ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+		resp, err := aiComplete(ctx, messages, budget, temperature)
+		cancel()
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		if len(resp.Choices) == 0 {
+			lastErr = fmt.Errorf("AI tidak mengembalikan hasil (percobaan %d/%d)", attempt+1, len(budgets))
+			continue
+		}
+		raw := cleanJSON(resp.Choices[0].Message.Content)
+		if strings.TrimSpace(raw) == "" {
+			lastErr = fmt.Errorf("respons AI kosong pada percobaan %d/%d (finish=%s, budget=%d token) - model kemungkinan menghabiskan jatah token untuk reasoning internal sebelum sempat menulis JSON",
+				attempt+1, len(budgets), resp.Choices[0].FinishReason, budget)
+			continue
+		}
+		if err := json.Unmarshal([]byte(raw), out); err != nil {
+			lastErr = fmt.Errorf("gagal parse JSON pada percobaan %d/%d (finish=%s, budget=%d token): %w (raw: %.200s)",
+				attempt+1, len(budgets), resp.Choices[0].FinishReason, budget, err, raw)
+			continue
+		}
+		return nil
+	}
+	return lastErr
+}
+
 // StyleProfile = profil gaya bahasa yg diekstrak dari sekumpulan chat manusia.
 type StyleProfile struct {
 	GreetingPatterns  []string `json:"greeting_patterns"`  // variasi sapaan pembuka
@@ -419,10 +464,10 @@ func runIncrementalLearning(agentID uint) {
 	var pc int64
 	database.DB.Model(&models.LearningPattern{}).Where("learning_run_id = ?", run.ID).Count(&pc)
 	database.DB.Model(&run).Updates(map[string]any{
-		"total_chats":  len(humanChats),
-		"human_chats":  len(humanChats),
+		"total_chats":   len(humanChats),
+		"human_chats":   len(humanChats),
 		"pattern_count": int(pc),
-		"completed_at": &now,
+		"completed_at":  &now,
 	})
 }
 
@@ -515,24 +560,12 @@ Fokus pada:
 
 Output HANYA JSON valid, tanpa penjelasan tambahan.`
 
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-	defer cancel()
-
-	resp, err := CreateAICompletion(ctx, []openai.ChatCompletionMessage{
+	var profile StyleProfile
+	if err := aiJSONInto([]openai.ChatCompletionMessage{
 		{Role: openai.ChatMessageRoleSystem, Content: prompt},
 		{Role: openai.ChatMessageRoleUser, Content: transcript},
-	}, 1500, 0.3)
-	if err != nil {
-		return StyleProfile{}, err
-	}
-	if len(resp.Choices) == 0 {
-		return StyleProfile{}, fmt.Errorf("AI tidak mengembalikan hasil")
-	}
-
-	var profile StyleProfile
-	raw := cleanJSON(resp.Choices[0].Message.Content)
-	if err := json.Unmarshal([]byte(raw), &profile); err != nil {
-		return StyleProfile{}, fmt.Errorf("gagal parse style profile: %w (raw: %.200s)", err, raw)
+	}, 0.3, budgetJSON, &profile); err != nil {
+		return StyleProfile{}, fmt.Errorf("gagal ambil style profile: %w", err)
 	}
 	return profile, nil
 }
@@ -562,24 +595,12 @@ Prioritaskan pola yg:
 
 Max 10 pola. Output HANYA JSON array.`
 
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-	defer cancel()
-
-	resp, err := CreateAICompletion(ctx, []openai.ChatCompletionMessage{
+	var patterns []ExtractedPattern
+	if err := aiJSONInto([]openai.ChatCompletionMessage{
 		{Role: openai.ChatMessageRoleSystem, Content: prompt},
 		{Role: openai.ChatMessageRoleUser, Content: transcript},
-	}, 2000, 0.4)
-	if err != nil {
-		return nil, err
-	}
-	if len(resp.Choices) == 0 {
-		return nil, fmt.Errorf("AI tidak mengembalikan pola")
-	}
-
-	var patterns []ExtractedPattern
-	raw := cleanJSON(resp.Choices[0].Message.Content)
-	if err := json.Unmarshal([]byte(raw), &patterns); err != nil {
-		return nil, fmt.Errorf("gagal parse patterns: %w (raw: %.200s)", err, raw)
+	}, 0.4, budgetJSON, &patterns); err != nil {
+		return nil, fmt.Errorf("gagal ambil pola: %w", err)
 	}
 
 	// Filter: hanya pola dengan confidence cukup
@@ -620,23 +641,12 @@ Output JSON array, tiap elemen:
 
 Max 8 pola. Output HANYA JSON array.`, labelName)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-	defer cancel()
-
-	resp, err := CreateAICompletion(ctx, []openai.ChatCompletionMessage{
+	var patterns []ExtractedPattern
+	if err := aiJSONInto([]openai.ChatCompletionMessage{
 		{Role: openai.ChatMessageRoleSystem, Content: prompt},
 		{Role: openai.ChatMessageRoleUser, Content: transcript},
-	}, 2000, 0.4)
-	if err != nil {
-		return nil, err
-	}
-	if len(resp.Choices) == 0 {
-		return nil, fmt.Errorf("AI tidak mengembalikan pola")
-	}
-	var patterns []ExtractedPattern
-	raw := cleanJSON(resp.Choices[0].Message.Content)
-	if err := json.Unmarshal([]byte(raw), &patterns); err != nil {
-		return nil, fmt.Errorf("gagal parse pola label: %w (raw: %.200s)", err, raw)
+	}, 0.4, budgetJSON, &patterns); err != nil {
+		return nil, fmt.Errorf("gagal ambil pola label: %w", err)
 	}
 	var filtered []ExtractedPattern
 	for _, p := range patterns {
