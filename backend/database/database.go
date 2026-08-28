@@ -9,8 +9,8 @@ import (
 	"wa-assistant/backend/models"
 
 	"golang.org/x/crypto/bcrypt"
+	sqlite "github.com/glebarez/sqlite"
 	"gorm.io/driver/mysql"
-	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 )
 
@@ -59,10 +59,10 @@ func Init() {
 			log.Printf("MySQL unavailable (%v) — fallback ke SQLite", err)
 		}
 		dbPath := config.Env("DB_PATH", "./wa-assistant.db")
-		// Driver "sqlite" = modernc.org/sqlite (pure Go, sudah dipakai untuk sesi whatsmeow).
-		// Default gorm.io/driver/sqlite memakai mattn/go-sqlite3 yang butuh CGO.
+		// glebarez/sqlite (pure Go, driver "sqlite") — tanpa CGO, sama dengan sesi whatsmeow.
+		// Pragma di DSN: busy_timeout + WAL biar tahan akses bersamaan.
 		dsn := dbPath + "?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)"
-		DB, err = gorm.Open(sqlite.New(sqlite.Config{DriverName: "sqlite", DSN: dsn}), &gorm.Config{})
+		DB, err = gorm.Open(sqlite.Open(dsn), &gorm.Config{})
 		if err != nil {
 			log.Fatal("Database error (SQLite): ", err)
 		}
@@ -87,6 +87,10 @@ func Init() {
 		&models.ShippingCity{},
 		&models.ShippingOrder{},
 		&models.MediaAsset{},
+		&models.LearningRun{}, &models.LearningPattern{}, &models.LearningSnapshot{}, &models.LearningConfig{},
+		&models.PatternUsageLog{},
+		&models.LeadStageDef{}, &models.LeadLabelConfig{}, &models.LabelRule{},
+		&models.ConversationRead{},
 		&models.GroupGuardConfig{}, &models.GroupModerationLog{},
 		&models.MetaConversionEvent{},
 	)

@@ -25,12 +25,10 @@ import (
 	"go.mau.fi/whatsmeow/types/events"
 	waLog "go.mau.fi/whatsmeow/util/log"
 	"google.golang.org/protobuf/proto"
-
-	// Driver SQLite pure-Go; init-nya mendaftarkan diri sebagai "sqlite".
-	// Jangan pakai nama "sqlite3" — itu sudah dipegang mattn/go-sqlite3 (via
-	// gorm.io/driver/sqlite) yang jadi stub tanpa CGO.
-	_ "modernc.org/sqlite"
 )
+
+// SQLite sessions memakai driver murni-Go glebarez (nama driver "sqlite",
+// terdaftar otomatis lewat database.go) — tanpa CGO, lintas platform.
 
 // IncomingMessage = isi pesan masuk (teks dan/atau media).
 type IncomingMessage struct {
@@ -218,7 +216,7 @@ func sessionDSN(agentID uint) string {
 		os.MkdirAll("data", 0o755)
 		path = fmt.Sprintf("data/wa-session-agent-%d.db", agentID)
 	}
-	// modernc.org/sqlite (pure Go): gunakan _pragma alih-alih _foreign_keys=on
+	// glebarez (pure Go): gunakan _pragma alih-alih _foreign_keys=on
 	return path + "?_pragma=foreign_keys(1)&_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)"
 }
 

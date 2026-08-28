@@ -97,6 +97,8 @@ export interface Contact {
   needs_human: boolean;
   manual_pause_until?: string | null;
   name?: string;
+  labels?: { label_id: string; name: string; color: string }[];
+  unread_count?: number;
 }
 
 /** Ringkasan operasional percakapan untuk CS di inbox (bukan dikirim ke pelanggan). */
@@ -661,4 +663,185 @@ export interface ScheduledStatus {
   status: string;
   error?: string;
   created_at: string;
+}
+
+// Media assets: file media yang dikirim AI via directive [[SEND_MEDIA:label]].
+export interface MediaAsset {
+  id: number;
+  agent_id: number;
+  name: string;
+  file_name: string;
+  media_type: string; // image, video, document
+  mime_type: string;
+  caption: string;
+  file_size: number;
+  label: string;
+  trigger_keys: string;
+  sort_order: number;
+  is_active: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+// --- Learning Engine types (single-tenant) ---
+
+export interface LearningRun {
+  id: number;
+  agent_id: number;
+  status: string; // pending, running, completed, failed
+  source_start_date?: string;
+  source_end_date?: string;
+  total_chats: number;
+  human_chats: number;
+  pattern_count: number;
+  style_profile?: string;
+  summary?: string;
+  error?: string;
+  created_at: string;
+  completed_at?: string;
+}
+
+export interface LearningPattern {
+  id: number;
+  learning_run_id: number;
+  agent_id: number;
+  label_id?: string;
+  label_name?: string;
+  pattern_type: string;
+  source?: string; // human | ai_success
+  trigger_context: string;
+  response_template: string;
+  emoji_signature: string;
+  confidence: number;
+  usage_count: number;
+  closing_impact: number;
+  status: string; // suggested, applied, rejected
+  applied_at?: string;
+  knowledge_id?: number;
+  created_at: string;
+}
+
+export interface LearningSnapshot {
+  id: number;
+  agent_id: number;
+  learning_run_id?: number;
+  snapshot_type: string;
+  label: string;
+  persona_at: string;
+  knowledge_count: number;
+  created_at: string;
+}
+
+export interface LearningConfig {
+  id: number;
+  agent_id: number;
+  enabled: boolean;
+  auto_apply: boolean;
+  min_confidence: number;
+  min_usage_count: number;
+  max_patterns_per_run: number;
+  preserve_manual_knowledge: boolean;
+  include_ai_closed?: boolean;
+  schedule_enabled: boolean;
+  schedule_cron: string;
+  lookback_days: number;
+  closing_labels: string;
+  updated_at: string;
+}
+
+export interface LearningStatus {
+  last_run?: LearningRun;
+  patterns_suggested: number;
+  patterns_applied: number;
+  patterns_rejected: number;
+  snapshot_count: number;
+  config: LearningConfig;
+}
+
+export interface LearningScore {
+  close_rate_pct: number;
+  closing_contacts: number;
+  active_contacts: number;
+  patterns_applied: number;
+  patterns_pending: number;
+  avg_closing_impact: number;
+  score: number;
+}
+
+export interface LearningRunDetail {
+  run: LearningRun;
+  patterns: LearningPattern[];
+}
+
+export interface StyleProfile {
+  greeting_patterns: string[];
+  closing_patterns: string[];
+  common_phrases: string[];
+  emoji_usage: string[];
+  tone_description: string;
+  pacing_style: string;
+  objection_handling: string[];
+  upsell_techniques: string[];
+  follow_up_style: string[];
+}
+
+export interface LearningEnqueued {
+  run_id: number;
+  status: string;
+  message: string;
+}
+
+// --- Meta CAPI types (single-tenant) ---
+
+export interface MetaStats {
+  pending: number;
+  sent: number;
+  failed: number;
+  last_event?: { event_name: string; status: string };
+}
+
+export interface MetaConfigData {
+  allowed: boolean;
+  enabled: boolean;
+  pixel_id: string;
+  graph_version: string;
+  test_event_code: string;
+  configured: boolean;
+  conv_labels: string;
+  event_name: string;
+  label_events: Record<string, string>;
+  stats?: MetaStats;
+}
+
+// --- Pipeline & Label (single-tenant) ---
+
+export interface LeadStageDef {
+  id: number;
+  agent_id: number;
+  key: string;
+  name: string;
+  color: string;
+  rank: number;
+  description: string;
+  is_closing: boolean;
+  min_confidence: number;
+  is_default: boolean;
+}
+
+export interface LabelRule {
+  id: number;
+  agent_id: number;
+  name: string;
+  enabled: boolean;
+  priority: number;
+  trigger_keywords: string; // JSON array string (lowercase)
+  trigger_stage: string; // '' = semua tahap
+  action_stage: string; // '' = tak ubah tahap
+  action_wa_label: string; // '' = tak beri label WA
+}
+
+export interface PipelineData {
+  stages: LeadStageDef[];
+  config: { smart_labels_enabled: boolean; closing_definition: string };
+  rules: LabelRule[];
 }
