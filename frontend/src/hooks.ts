@@ -1,6 +1,7 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import api from './services/api';
-import type { Analytics, AIMetrics, Contact, ChatMsg, ConversationBrief, Broadcast, BroadcastDetailData, BroadcastSafetyForm, BroadcastConsentSummary, WAGroup, GroupGuardConfig, GroupModerationLog, LabelInfo, ScheduledMessage, AutoReply, Template, SavedContact, SavedContactsResp, LeadStage, FollowUp, Agent, KnowledgeItem, Handoff, CrawlJob, CrawlPage, KnowledgeUsage, ScheduledStatus, ApiSettings, Flow, Product, ProductOrder, AIForm, AIFormSubmission } from './types';
+import { writeBlastDelayCache } from './types';
+import type { Analytics, AIMetrics, Contact, ChatMsg, ConversationBrief, Broadcast, BroadcastDetailData, BroadcastSafetyForm, BroadcastConsentSummary, WAGroup, GroupGuardConfig, GroupModerationLog, LabelInfo, ScheduledMessage, AutoReply, Template, SavedContact, SavedContactsResp, LeadStage, FollowUp, Agent, KnowledgeItem, Handoff, CrawlJob, CrawlPage, KnowledgeUsage, ScheduledStatus, ApiSettings, Flow, Product, ProductOrder, AIForm, AIFormSubmission, LearningRun, LearningPattern, LearningSnapshot, LearningConfig, LearningStatus, LearningRunDetail, LearningEnqueued, MediaAsset, User, BlastDelay } from './types';
 
 type ContactList = { number: string; name: string }[];
 
@@ -1074,5 +1075,329 @@ export function useUsage() {
   return useQuery<{ tenant: { id: number; name: string }; numbers_used: number; max_numbers: number }>({
     queryKey: ['usage'],
     queryFn: async () => (await api.get('/usage')).data,
+  });
+}
+
+
+// Kontrol AI per kontak (dipakai CS dari inbox).
+export function usePauseAIContact(agentId: number) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (sender: string) =>
+      (await api.post(`/agents/${agentId}/contacts/${encodeURIComponent(sender)}/ai-off`)).data.data,
+    onSuccess: (_d, sender) => {
+      qc.invalidateQueries({ queryKey: ['conversation', agentId, sender] });
+      qc.invalidateQueries({ queryKey: ['contacts', agentId] });
+    },
+  });
+}
+
+export function useResumeAIContact(agentId: number) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (sender: string) =>
+      (await api.post(`/agents/${agentId}/contacts/${encodeURIComponent(sender)}/ai-on`)).data.data,
+    onSuccess: (_d, sender) => {
+      qc.invalidateQueries({ queryKey: ['conversation', agentId, sender] });
+      qc.invalidateQueries({ queryKey: ['contacts', agentId] });
+    },
+  });
+}
+
+export function useManualHandoffContact(agentId: number) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (sender: string) =>
+      (await api.post(`/agents/${agentId}/contacts/${encodeURIComponent(sender)}/handoff`)).data.data,
+    onSuccess: (_d, sender) => {
+      qc.invalidateQueries({ queryKey: ['conversation', agentId, sender] });
+      qc.invalidateQueries({ queryKey: ['handoffs', agentId] });
+    },
+  });
+}
+
+
+export function useLearningStatus(agentId: number) {
+  return useQuery<LearningStatus>({
+    queryKey: ['learning-status', agentId],
+    queryFn: async () => (await api.get(`/agents/${agentId}/learning/status`)).data.data,
+    enabled: !!agentId,
+  });
+}
+
+export function useLearningRuns(agentId: number) {
+  return useQuery<LearningRun[]>({
+    queryKey: ['learning-runs', agentId],
+    queryFn: async () => (await api.get(`/agents/${agentId}/learning/runs`)).data.data,
+    enabled: !!agentId,
+  });
+}
+
+export function useLearningRun(agentId: number, runId: number) {
+  return useQuery<LearningRunDetail>({
+    queryKey: ['learning-run', agentId, runId],
+    queryFn: async () => (await api.get(`/agents/${agentId}/learning/runs/${runId}`)).data.data,
+    enabled: !!agentId && !!runId,
+  });
+}
+
+export function useLearningPatterns(agentId: number, status: string = 'suggested') {
+  return useQuery<LearningPattern[]>({
+    queryKey: ['learning-patterns', agentId, status],
+    queryFn: async () => (await api.get(`/agents/${agentId}/learning/patterns`, { params: { status } })).data.data,
+    enabled: !!agentId,
+  });
+}
+
+export function useLearningSnapshots(agentId: number) {
+  return useQuery<LearningSnapshot[]>({
+    queryKey: ['learning-snapshots', agentId],
+    queryFn: async () => (await api.get(`/agents/${agentId}/learning/snapshots`)).data.data,
+    enabled: !!agentId,
+  });
+}
+
+export function useLearningConfig(agentId: number) {
+  return useQuery<LearningConfig>({
+    queryKey: ['learning-config', agentId],
+    queryFn: async () => (await api.get(`/agents/${agentId}/learning/config`)).data.data,
+    enabled: !!agentId,
+  });
+}
+
+export function useStartLearning(agentId: number) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (params: { start_date?: string; end_date?: string }) =>
+      (await api.post(`/agents/${agentId}/learning/run`, params)).data.data as LearningEnqueued,
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['learning-status', agentId] });
+      qc.invalidateQueries({ queryKey: ['learning-runs', agentId] });
+      qc.invalidateQueries({ queryKey: ['learning-patterns', agentId] });
+    },
+  });
+}
+
+export function useApplyPattern(agentId: number) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (patternId: number) =>
+      (await api.post(`/agents/${agentId}/learning/patterns/${patternId}/apply`)).data.data,
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['learning-patterns', agentId] });
+      qc.invalidateQueries({ queryKey: ['learning-status', agentId] });
+      qc.invalidateQueries({ queryKey: ['knowledge', agentId] });
+    },
+  });
+}
+
+export function useRejectPattern(agentId: number) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (patternId: number) =>
+      (await api.post(`/agents/${agentId}/learning/patterns/${patternId}/reject`)).data.data,
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['learning-patterns', agentId] });
+      qc.invalidateQueries({ queryKey: ['learning-status', agentId] });
+    },
+  });
+}
+
+export function useApplyAllPatterns(agentId: number) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (minConfidence: number) =>
+      (await api.post(`/agents/${agentId}/learning/patterns/apply-all`, { min_confidence: minConfidence })).data.data,
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['learning-patterns', agentId] });
+      qc.invalidateQueries({ queryKey: ['learning-status', agentId] });
+      qc.invalidateQueries({ queryKey: ['knowledge', agentId] });
+    },
+  });
+}
+
+export function useCreateSnapshot(agentId: number) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (label: string) =>
+      (await api.post(`/agents/${agentId}/learning/snapshots`, { label })).data.data as LearningSnapshot,
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['learning-snapshots', agentId] });
+      qc.invalidateQueries({ queryKey: ['learning-status', agentId] });
+    },
+  });
+}
+
+export function useRollbackSnapshot(agentId: number) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (snapshotId: number) =>
+      (await api.post(`/agents/${agentId}/learning/snapshots/${snapshotId}/rollback`)).data.data as LearningSnapshot,
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['learning-snapshots', agentId] });
+      qc.invalidateQueries({ queryKey: ['learning-status', agentId] });
+      qc.invalidateQueries({ queryKey: ['knowledge', agentId] });
+    },
+  });
+}
+
+export function useSaveLearningConfig(agentId: number) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (config: Partial<LearningConfig>) =>
+      (await api.put(`/agents/${agentId}/learning/config`, config)).data.data as LearningConfig,
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['learning-config', agentId] });
+      qc.invalidateQueries({ queryKey: ['learning-status', agentId] });
+    },
+  });
+}
+
+
+// Media assets (SEND_MEDIA directive).
+export function useMediaAssets(agentId: number) {
+  return useQuery<MediaAsset[]>({
+    queryKey: ['media-assets', agentId],
+    queryFn: async () => (await api.get(`/agents/${agentId}/media-assets`)).data.data,
+    enabled: !!agentId,
+  });
+}
+
+export function useUploadMediaAsset(agentId: number) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (fd: FormData) =>
+      (await api.post(`/agents/${agentId}/media-assets`, fd)).data.data,
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['media-assets', agentId] });
+    },
+  });
+}
+
+export function useDeleteMediaAsset(agentId: number) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (assetId: number) =>
+      (await api.delete(`/agents/${agentId}/media-assets/${assetId}`)).data,
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['media-assets', agentId] });
+    },
+  });
+}
+
+
+// Meta CAPI: konfigurasi pixel + save + test event
+export interface MetaConfigData {
+  pixel_id: string;
+  configured: boolean;
+  test_event_code: string;
+  conv_labels: string;
+  event_name: string;
+  label_events: Record<string, string>;
+  standard_events: string[];
+  recent_events: any[];
+  available_labels: any[];
+}
+
+export function useMetaConfig(agentId: number) {
+  return useQuery<MetaConfigData>({
+    queryKey: ['meta-config', agentId],
+    queryFn: async () => (await api.get(`/agents/${agentId}/meta`)).data.data,
+    enabled: !!agentId,
+  });
+}
+
+export function useSaveMetaConfig(agentId: number) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (body: Record<string, any>) =>
+      (await api.put(`/agents/${agentId}/meta`, body)).data,
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['meta-config', agentId] });
+    },
+  });
+}
+
+export function useTestMetaEvent(agentId: number) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async () => (await api.post(`/agents/${agentId}/meta/test`)).data,
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['meta-config', agentId] });
+    },
+  });
+}
+
+// ---- Akun & tim (manajemen user, khusus super admin) ----
+
+// Payload form akun. Password hanya dipakai saat membuat akun baru.
+export type UserPayload = Partial<User> & { password?: string };
+
+// Profil user yang sedang login. GET /me membalas objek user langsung (tidak dibungkus {data:...}).
+export function useMe() {
+  return useQuery<User>({
+    queryKey: ['me'],
+    queryFn: async () => (await api.get('/me')).data,
+    staleTime: 60_000,
+  });
+}
+
+export function useUsers() {
+  return useQuery<User[]>({
+    queryKey: ['users'],
+    queryFn: async () => (await api.get('/users')).data.data,
+  });
+}
+
+export function useCreateUser() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (u: UserPayload) => (await api.post('/users', u)).data,
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['users'] }),
+  });
+}
+
+export function useUpdateUser() {
+  const qc = useQueryClient();
+  return useMutation({
+    // id dipisah dari body supaya password tidak ikut terkirim lewat endpoint ini.
+    mutationFn: async ({ id, ...body }: UserPayload & { id: number }) =>
+      (await api.put(`/users/${id}`, body)).data,
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['users'] }),
+  });
+}
+
+export function useResetUserPassword() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ id, new_password }: { id: number; new_password: string }) =>
+      (await api.post(`/users/${id}/password`, { new_password })).data,
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['users'] }),
+  });
+}
+
+export function useDeleteUser() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (id: number) => (await api.delete(`/users/${id}`)).data,
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['users'] }),
+  });
+}
+
+// ---- Jeda blast (default per akun, dipakai tab Blast & Jadwal Blast) ----
+
+/**
+ * Simpan default jeda blast milik akun yang sedang login.
+ * Nilai tersimpan ikut terbawa di GET /me sebagai `blast_delay`, dan di-cache ke
+ * localStorage supaya form sudah menampilkan angka yang benar pada render pertama.
+ */
+export function useSaveBlastDelay() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (d: BlastDelay) => (await api.put('/blast-delay', d)).data.data as BlastDelay,
+    onSuccess: (saved) => {
+      writeBlastDelayCache(saved);
+      qc.invalidateQueries({ queryKey: ['me'] });
+    },
   });
 }

@@ -113,6 +113,17 @@ func AuthMiddleware() gin.HandlerFunc {
 			c.AbortWithStatusJSON(401, gin.H{"error": "User tidak valid"})
 			return
 		}
+		// User sengaja di-load ulang dari DB tiap request (bukan dibaca dari klaim JWT)
+		// supaya pencabutan akses oleh super admin — nonaktifkan akun atau cabut fitur —
+		// langsung berlaku tanpa menunggu token 24 jam kadaluarsa.
+		// Super admin selalu lolos cek aktif supaya tidak bisa mengunci dirinya sendiri.
+		// "account_disabled" = penanda mesin untuk frontend: interceptor axios memakainya
+		// untuk membedakan 403 "akun dimatikan" dari 403 "fitur tidak tersedia", lalu
+		// menendang user ke halaman login alih-alih membiarkan dashboard-nya mati diam.
+		if !user.IsSuperAdmin && !user.Active {
+			c.AbortWithStatusJSON(403, gin.H{"error": "Akun kamu dinonaktifkan. Hubungi admin.", "account_disabled": true})
+			return
+		}
 
 		c.Set("user_id", user.ID)
 		if user.TenantID != nil && *user.TenantID > 0 {
@@ -122,6 +133,10 @@ func AuthMiddleware() gin.HandlerFunc {
 		}
 		c.Set("role", user.Role)
 		c.Set("is_super_admin", user.IsSuperAdmin)
+		// "features" dipakai RequireFeature() di perm.go; "user_obj" supaya handler
+		// tidak perlu query ulang user yang sama.
+		c.Set("features", user.FeatureList())
+		c.Set("user_obj", user)
 		c.Next()
 	}
 }
@@ -160,6 +175,20 @@ func tenantFromToken(tokenStr string) (uint, bool) {
 	claims, ok := token.Claims.(jwt.MapClaims)
 	if !ok {
 		return 0, false
+	}
+	// Token login utama juga membawa klaim tenant_id, jadi bisa dipakai langsung di
+	// ?token=. Untuk itu pemiliknya wajib dicek ulang ke DB: kalau akunnya sudah
+	// dinonaktifkan (atau dihapus), akses media ikut dicabut saat itu juga — tidak
+	// menunggu token 24 jam kadaluarsa. Media token pendek (scope "media") tidak punya
+	// klaim user_id, jadi lolos cek ini apa adanya.
+	if uidFloat, ok := claims["user_id"].(float64); ok && uidFloat > 0 {
+		var u models.User
+		if err := database.DB.First(&u, uint(uidFloat)).Error; err != nil {
+			return 0, false
+		}
+		if !u.IsSuperAdmin && !u.Active {
+			return 0, false
+		}
 	}
 	if tid, ok := claims["tenant_id"].(float64); ok && tid > 0 {
 		return uint(tid), true
@@ -215,6 +244,23 @@ func userResponse(u models.User) gin.H {
 		"role":           u.Role,
 		"is_super_admin": u.IsSuperAdmin,
 		"tenant_id":      u.TenantID,
+		// Super admin selalu dianggap aktif & punya semua fitur, apa pun isi kolomnya.
+		"active":   u.IsSuperAdmin || u.Active,
+		"features": u.FeatureList(),
+		// Default jeda blast per akun — dipakai tab Blast & Jadwal Blast sebagai
+		// nilai awal. Ikut di /me supaya frontend tidak perlu request terpisah.
+		"blast_delay": blastDelayResponse(u),
+	}
+}
+
+// blastDelayResponse membungkus jeda blast user (sudah lewat pengaman nilai bawaan).
+func blastDelayResponse(u models.User) gin.H {
+	minDelay, maxDelay, restEvery, restDuration := u.BlastDelay()
+	return gin.H{
+		"min_delay":     minDelay,
+		"max_delay":     maxDelay,
+		"rest_every":    restEvery,
+		"rest_duration": restDuration,
 	}
 }
 
@@ -334,7 +380,10 @@ func Login(c *gin.Context) {
 		c.JSON(400, gin.H{"error": loginGenericError})
 		return
 	}
-	req.Username = strings.TrimSpace(req.Username)
+	// Username disimpan huruf kecil semua (normalizeUsername di users.go) dan SQLite
+	// membandingkan string secara case-sensitive, jadi input login wajib dinormalisasi
+	// dengan cara yang sama — kalau tidak, "Rina" gagal login padahal tersimpan "rina".
+	req.Username = normalizeUsername(req.Username)
 	ip := c.ClientIP()
 	if wait := checkLoginThrottle(ip, req.Username, start); wait > 0 {
 		throttleLogin(c, wait)
@@ -364,6 +413,11 @@ func Login(c *gin.Context) {
 	}
 
 	clearLoginPairThrottle(ip, req.Username)
+	// Akun yang dinonaktifkan super admin ditolak di pintu masuk (super-admin dikecualikan).
+	if !user.IsSuperAdmin && !user.Active {
+		c.JSON(403, gin.H{"error": "Akun kamu dinonaktifkan. Hubungi admin.", "account_disabled": true})
+		return
+	}
 	// Wajib verifikasi email sebelum masuk (super-admin dikecualikan).
 	if !user.IsSuperAdmin && !user.EmailVerified {
 		c.JSON(403, gin.H{

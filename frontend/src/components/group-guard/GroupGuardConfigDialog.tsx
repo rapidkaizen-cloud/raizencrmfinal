@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { clearDraft, useDraftState } from '../../draft';
 import {
   Alert, Avatar, Box, Button, CircularProgress, Dialog, DialogActions, DialogContent,
   DialogTitle, FormControlLabel, IconButton, Paper, Radio, RadioGroup,
@@ -105,7 +105,9 @@ function ConfigEditor({ agentId, group, initialForm, fullScreen, onClose }: {
   onClose: () => void;
 }) {
   const save = useSaveGroupConfig(agentId);
-  const [form, setForm] = useState<GroupGuardConfig>(initialForm);
+  // Dialog ikut hilang saat user pindah tab, jadi aturan yang belum disimpan ditahan sebagai draft.
+  const draftKey = `groupguard:${agentId}:${group.jid}`;
+  const [form, setForm] = useDraftState<GroupGuardConfig>(draftKey, initialForm);
 
   const set = (patch: Partial<GroupGuardConfig>) => setForm(current => ({ ...current, ...patch }));
   const isDirty = JSON.stringify(form) !== JSON.stringify(initialForm);
@@ -115,6 +117,7 @@ function ConfigEditor({ agentId, group, initialForm, fullScreen, onClose }: {
   const requestClose = async () => {
     if (save.isPending) return;
     if (isDirty && !await swalConfirm('Tutup tanpa menyimpan?', 'Perubahan aturan di grup ini akan hilang.')) return;
+    clearDraft(draftKey);
     onClose();
   };
 
@@ -130,6 +133,7 @@ function ConfigEditor({ agentId, group, initialForm, fullScreen, onClose }: {
     try {
       await save.mutateAsync(form);
       swalToast(form.enabled ? 'Anti-Spam Grup diaktifkan' : 'Aturan grup disimpan');
+      clearDraft(draftKey);
       onClose();
     } catch {
       swalToast('Aturan belum bisa disimpan', 'error');

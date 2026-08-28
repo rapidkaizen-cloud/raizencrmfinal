@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { useDraftState } from '../draft';
 import { useQueryClient } from '@tanstack/react-query';
 import {
   Box, Typography, Button, Stack, Chip, IconButton, Checkbox, Card, CardContent, Alert, Divider, Tooltip, Avatar,
@@ -120,14 +121,16 @@ export default function ContactsPanel({ agentId, onBroadcast, onOpenChat }: {
   onBroadcast: (recipients: string) => void;
   onOpenChat: (number: string) => void;
 }) {
-  const [addOpen, setAddOpen] = useState(false);
-  const [edit, setEdit] = useState<SavedContact | null>(null);
-  const [open, setOpen] = useState(false);
-  const [form, setForm] = useState<Partial<SavedContact>>(EMPTY);
+  // Panel di-unmount saat pindah tab, jadi isian dialog & filter disimpan sebagai draft per CS.
+  const k = (key: string) => `contacts:${agentId}:${key}`;
+  const [addOpen, setAddOpen] = useDraftState(k('addOpen'), false);
+  const [edit, setEdit] = useDraftState<SavedContact | null>(k('edit'), null);
+  const [open, setOpen] = useDraftState(k('open'), false);
+  const [form, setForm] = useDraftState<Partial<SavedContact>>(k('form'), EMPTY);
   const [formErrors, setFormErrors] = useState<Record<string, string>>({});
-  const [q, setQ] = useState('');
-  const [tag, setTag] = useState('');
-  const [stage, setStage] = useState<LeadStage | ''>('');
+  const [q, setQ] = useDraftState(k('q'), '');
+  const [tag, setTag] = useDraftState(k('tag'), '');
+  const [stage, setStage] = useDraftState<LeadStage | ''>(k('stage'), '');
   const [page, setPage] = useState(1);
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [bulkTag, setBulkTag] = useState('');
@@ -162,7 +165,7 @@ export default function ContactsPanel({ agentId, onBroadcast, onOpenChat }: {
     const normalized = { ...ct, lead_stage: safeLeadStage(ct.lead_stage) };
     setForm(normalized); setFormErrors({}); setEdit(normalized); setOpen(true);
   };
-  const closeDialog = () => { setAddOpen(false); setOpen(false); setEdit(null); setFormErrors({}); };
+  const closeDialog = () => { setAddOpen(false); setOpen(false); setEdit(null); setForm(EMPTY); setFormErrors({}); };
 
   const validate = (): boolean => {
     const errs: Record<string, string> = {};

@@ -124,13 +124,13 @@ func TestChat(c *gin.Context) {
 	reply = services.LinkifyWhatsApp(reply, agent.Number) // nomor WA jadi tautan klik (kecuali nomor sendiri)
 	c.JSON(200, gin.H{
 		"reply": reply, "escalate": escalate, "model": model,
-		"knowledge_count":  knowledgeCount,
-		"retrieval_mode":   trace.RetrievalMode,
-		"retrieval_query":  trace.RetrievalQuery,
-		"top_similarity":   trace.TopSimilarity,
-		"answer_overlap":   trace.AnswerOverlap,
-		"product_ids":      trace.ProductIDs,
-		"knowledge_ids":    trace.KnowledgeIDs,
+		"knowledge_count":    knowledgeCount,
+		"retrieval_mode":     trace.RetrievalMode,
+		"retrieval_query":    trace.RetrievalQuery,
+		"top_similarity":     trace.TopSimilarity,
+		"answer_overlap":     trace.AnswerOverlap,
+		"product_ids":        trace.ProductIDs,
+		"knowledge_ids":      trace.KnowledgeIDs,
 		"grounding_retried":  trace.GroundingRetried,
 		"grounding_fallback": trace.GroundingFallback,
 	})
@@ -323,10 +323,10 @@ func DeleteInboxConversation(c *gin.Context) {
 	}
 
 	c.JSON(200, gin.H{
-		"message":        "Chat dihapus dari inbox",
-		"sender":         sender,
-		"deleted_chats":  res.RowsAffected,
-		"deleted_media":  len(seen),
+		"message":       "Chat dihapus dari inbox",
+		"sender":        sender,
+		"deleted_chats": res.RowsAffected,
+		"deleted_media": len(seen),
 	})
 }
 

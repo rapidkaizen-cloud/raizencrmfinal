@@ -86,13 +86,16 @@ function nodeLabel(id: string, node: FlowNode) {
   return first ? (first.length > 28 ? first.slice(0, 28) + '…' : first) : 'Menu tanpa judul';
 }
 
+// Batas jumlah kata pemicu; harus sama dengan maxFlowTriggers di backend/handlers/flow.go.
+const MAX_TRIGGERS = 20;
+
 export default function FlowPanel({ agentId }: { agentId: number }) {
   const { data: flow, isLoading } = useFlow(agentId);
   const saveFlow = useSaveFlow(agentId);
 
   const [enabled, setEnabled] = useState(false);
   const [trigger, setTrigger] = useState('menu');
-  const [matchType, setMatchType] = useState('exact');
+  const [matchType, setMatchType] = useState('contains');
   const [displayMode, setDisplayMode] = useState<'auto' | 'text' | 'buttons'>('auto');
   const [delayMin, setDelayMin] = useState(2);
   const [delayMax, setDelayMax] = useState(4);
@@ -102,6 +105,17 @@ export default function FlowPanel({ agentId }: { agentId: number }) {
   const [previewNode, setPreviewNode] = useState(ROOT);
   const [expandedNode, setExpandedNode] = useState(ROOT);
 
+  // Kata pemicu boleh lebih dari satu, dipisah koma. Daftar ini dipakai untuk pratinjau
+  // dan validasi; backend melakukan perapian yang sama saat menyimpan.
+  const triggerList = useMemo(() => {
+    const seen = new Set<string>();
+    return trigger.split(/[,\n]/).map(part => part.trim()).filter(part => {
+      if (!part || seen.has(part.toLowerCase())) return false;
+      seen.add(part.toLowerCase());
+      return true;
+    });
+  }, [trigger]);
+
   const configKey = useMemo(() => JSON.stringify({ enabled, trigger: trigger.trim(), matchType, displayMode, delayMin, delayMax, nodes }), [enabled, trigger, matchType, displayMode, delayMin, delayMax, nodes]);
   const hasChanges = loaded && baseline !== configKey;
 
@@ -110,7 +124,7 @@ export default function FlowPanel({ agentId }: { agentId: number }) {
     setBaseline('');
     setEnabled(false);
     setTrigger('menu');
-    setMatchType('exact');
+    setMatchType('contains');
     setDisplayMode('auto');
     setDelayMin(2);
     setDelayMax(4);
@@ -124,7 +138,7 @@ export default function FlowPanel({ agentId }: { agentId: number }) {
     if (loaded || !flow) return;
     const nextEnabled = !!flow.enabled;
     const nextTrigger = flow.trigger || 'menu';
-    const nextMatchType = flow.match_type || 'exact';
+    const nextMatchType = flow.match_type || 'contains';
     const nextDisplayMode = flow.display_mode || 'auto';
     const nextDelayMin = Number.isFinite(flow.delay_min) ? flow.delay_min : 2;
     const nextDelayMax = Number.isFinite(flow.delay_max) ? flow.delay_max : 4;
@@ -141,7 +155,7 @@ export default function FlowPanel({ agentId }: { agentId: number }) {
       if (draft?.nodes?.[ROOT]) {
         setEnabled(!!draft.enabled);
         setTrigger(draft.trigger || 'menu');
-        setMatchType(draft.matchType || 'exact');
+        setMatchType(draft.matchType || 'contains');
         setDisplayMode(draft.displayMode || 'auto');
         setDelayMin(Number.isFinite(draft.delayMin) ? draft.delayMin : 2);
         setDelayMax(Number.isFinite(draft.delayMax) ? draft.delayMax : 4);
@@ -300,7 +314,7 @@ export default function FlowPanel({ agentId }: { agentId: number }) {
       };
       setEnabled(!!saved.enabled);
       setTrigger(saved.trigger || 'menu');
-      setMatchType(saved.matchType || 'exact');
+      setMatchType(saved.matchType || 'contains');
       setDisplayMode(saved.displayMode || 'auto');
       setDelayMin(Number.isFinite(saved.delayMin) ? saved.delayMin : 2);
       setDelayMax(Number.isFinite(saved.delayMax) ? saved.delayMax : 4);
@@ -316,7 +330,9 @@ export default function FlowPanel({ agentId }: { agentId: number }) {
 
   const save = async () => {
     // Validasi ringan sebelum kirim.
-    if (!trigger.trim()) { swalToast('Kata pemicu wajib diisi, misalnya "menu".', 'error'); return; }
+    if (!triggerList.length) { swalToast('Kata pemicu wajib diisi, misalnya "menu, bantuan".', 'error'); return; }
+    if (triggerList.length > MAX_TRIGGERS) { swalToast(`Maksimal ${MAX_TRIGGERS} kata pemicu dalam satu alur.`, 'error'); return; }
+    if (triggerList.some(kw => Array.from(kw).length > 64)) { swalToast('Setiap kata pemicu maksimal 64 karakter.', 'error'); return; }
     for (const [id, node] of Object.entries(nodes)) {
       if (!node.message.trim()) { swalToast(`Menu "${nodeLabel(id, node)}" belum ada pesannya.`, 'error'); return; }
       if (id === ROOT && enabled && node.options.length === 0) { swalToast('Menu Utama membutuhkan minimal satu pilihan sebelum diaktifkan.', 'error'); return; }
@@ -336,7 +352,7 @@ export default function FlowPanel({ agentId }: { agentId: number }) {
     }
     const structure = JSON.stringify({ root: ROOT, nodes });
     try {
-      await saveFlow.mutateAsync({ enabled, trigger: trigger.trim() || 'menu', match_type: matchType, display_mode: displayMode, delay_min: delayMin, delay_max: delayMax, structure });
+      await saveFlow.mutateAsync({ enabled, trigger: triggerList.join(', ') || 'menu', match_type: matchType, display_mode: displayMode, delay_min: delayMin, delay_max: delayMax, structure });
       setBaseline(configKey);
       localStorage.removeItem(`wai_flow_draft_${agentId}`);
       swalToast(enabled ? 'Alur disimpan dan aktif.' : 'Alur disimpan sebagai nonaktif.');
@@ -397,16 +413,19 @@ export default function FlowPanel({ agentId }: { agentId: number }) {
               </Stack>
             </Stack>
             <Alert severity="info" icon={<AccountTreeIcon fontSize="inherit" />}>
-              Pelanggan mengetik <b>{trigger.trim() || 'kata pemicu'}</b> untuk membuka menu. Pilihan dapat ditekan sebagai tombol atau diketik dengan kode selama 30 menit. Ketik <b>0</b> untuk kembali atau <b>keluar</b> untuk menutup menu.
+              Menu terbuka saat pesan pelanggan cocok dengan salah satu kata pemicu: <b>{triggerList.join(' · ') || 'kata pemicu'}</b>. Huruf besar/kecil diabaikan. Pilihan dapat ditekan sebagai tombol atau diketik dengan kode selama 30 menit. Ketik <b>0</b> untuk kembali atau <b>keluar</b> untuk menutup menu.
             </Alert>
             <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', md: 'repeat(2, minmax(0, 1fr))', xl: 'repeat(4, minmax(0, 1fr))' }, gap: 1.5 }}>
               <TextField label="Kata pemicu" value={trigger} onChange={e => setTrigger(e.target.value)}
-                size="small" fullWidth error={!trigger.trim()} helperText="Contoh: menu, bantuan, layanan" />
+                size="small" fullWidth error={!triggerList.length || triggerList.length > MAX_TRIGGERS}
+                helperText={triggerList.length > MAX_TRIGGERS
+                  ? `Maksimal ${MAX_TRIGGERS} kata pemicu.`
+                  : `Pisahkan dengan koma. Contoh: menu, bantuan, layanan${triggerList.length > 1 ? ` (${triggerList.length} kata pemicu)` : ''}`} />
               <TextField label="Cara cocok" select value={matchType} onChange={e => setMatchType(e.target.value)}
-                size="small" fullWidth helperText="Disarankan: persis sama">
-                <MenuItem value="exact">Persis sama — paling aman</MenuItem>
+                size="small" fullWidth helperText="Disarankan: mengandung">
+                <MenuItem value="contains">Pesan mengandung kata pemicu — disarankan</MenuItem>
+                <MenuItem value="exact">Persis sama — paling ketat</MenuItem>
                 <MenuItem value="prefix">Pesan diawali kata pemicu</MenuItem>
-                <MenuItem value="contains">Pesan mengandung kata pemicu</MenuItem>
               </TextField>
               <TextField label="Tampilan pilihan" select value={displayMode}
                 onChange={e => setDisplayMode(e.target.value as 'auto' | 'text' | 'buttons')}
@@ -435,7 +454,7 @@ export default function FlowPanel({ agentId }: { agentId: number }) {
               </TextField>
             </Box>
             {matchType === 'contains' && (
-              <Alert severity="warning">Mode “mengandung” dapat membuka menu dari percakapan biasa. Gunakan hanya jika kata pemicunya cukup unik.</Alert>
+              <Alert severity="info">Mode “mengandung” mencocokkan kata pemicu di mana pun dalam pesan, sebagai kata utuh (“menu” cocok di “buka menu dong”, tapi tidak di “menunggu”). Pakai kata yang cukup unik agar menu tidak terbuka dari obrolan biasa.</Alert>
             )}
             {displayMode === 'buttons' && Object.values(nodes).some(node => node.options.length > 3) && (
               <Alert severity="warning">Ada menu dengan lebih dari 3 pilihan. Kurangi pilihannya atau gunakan mode Otomatis sebelum menyimpan.</Alert>

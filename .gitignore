@@ -26,3 +26,9 @@ Thumbs.db
 
 # Vite cache
 .vite/
+
+# Binary hasil build di VPS (Linux, tanpa ekstensi) + cadangannya
+/raizencrm
+/raizencrm.bak-*
+/raizencrm.gagal-*
+frontend/dist.old/

@@ -96,7 +96,7 @@ func TestSelectKnowledgeAdvancedKeywordPath(t *testing.T) {
 		{K: models.Knowledge{ID: 2, Question: "Harga kaos polos lama", Answer: "Rp99.000", Tags: "harga,kaos", Source: "web", CreatedAt: time.Now().AddDate(-1, 0, 0)}},
 		{K: models.Knowledge{ID: 3, Question: "Jam operasional", Answer: "08-17", Tags: "jam", Source: "manual", CreatedAt: time.Now()}},
 	}
-	got, mode, _ := selectKnowledgeAdvanced("berapa harga kaos polos", items)
+	got, mode, _ := selectKnowledgeAdvanced("berapa harga kaos polos", items, nil)
 	if len(got) == 0 {
 		t.Fatal("harus ada hasil")
 	}

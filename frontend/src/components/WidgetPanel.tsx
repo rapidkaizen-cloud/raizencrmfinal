@@ -1,4 +1,5 @@
-import { useMemo, useRef, useState } from 'react';
+import { useMemo, useRef } from 'react';
+import { useDraftState } from '../draft';
 import {
   Box, Typography, Card, CardContent, Button, Stack, TextField, Alert,
   MenuItem, IconButton, CircularProgress,
@@ -37,10 +38,12 @@ export default function WidgetPanel({ agentId }: { agentId: number }) {
   const { data: agents, isLoading } = useAgents();
   const number = normalizePhone(agents?.find(a => a.id === agentId)?.number || '');
 
-  const [msg, setMsg] = useState('Halo, saya mau tanya produknya 😊');
-  const [greeting, setGreeting] = useState('Halo! 👋 Ada yang bisa kami bantu?');
-  const [pos, setPos] = useState<'right' | 'left'>('right');
-  const [color, setColor] = useState('#25D366');
+  // Panel di-unmount saat pindah tab, jadi setelan widget disimpan sebagai draft per CS.
+  const k = (name: string) => `widget:${agentId}:${name}`;
+  const [msg, setMsg] = useDraftState(k('msg'), 'Halo, saya mau tanya produknya 😊');
+  const [greeting, setGreeting] = useDraftState(k('greeting'), 'Halo! 👋 Ada yang bisa kami bantu?');
+  const [pos, setPos] = useDraftState<'right' | 'left'>(k('pos'), 'right');
+  const [color, setColor] = useDraftState(k('color'), '#25D366');
   const qrRef = useRef<HTMLCanvasElement>(null);
 
   const link = useMemo(() => {

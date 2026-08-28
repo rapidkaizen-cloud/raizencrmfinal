@@ -830,7 +830,8 @@ func NormalizePhone(s string) string {
 // pesan WhatsApp. Aturannya:
 //   - Tidak boleh kosong.
 //   - Digit pertama harus 1–9 (bukan '0' atau '+', karena NormalizePhone sudah membuang non-digit).
-//   - Untuk awalan '62' (kode negara Indonesia): panjang 11–13 digit.
+//   - Untuk awalan '62' (kode negara Indonesia): 9–12 digit setelah kode negara,
+//     yaitu format nasional 10–13 digit ("08xx…") atau 11–14 digit dengan awalan 62.
 //     Tujuannya menolak nomor yang terlalu panjang (mis. 15 digit) yang lolos dari
 //     filter WA tapi jelas salah ketik atau karakter tercampur.
 //   - Untuk negara lain (awalan 1–9 selain '62'): panjang 10–15 digit (range generik E.164).
@@ -846,8 +847,10 @@ func ValidatePhoneForWA(normalized string) (bool, string) {
 		return false, "awalan harus 1–9"
 	}
 	if strings.HasPrefix(normalized, "62") {
-		if len(normalized) < 11 || len(normalized) > 13 {
-			return false, "panjang nomor Indonesia harus 11–13 digit"
+		// Hitung tanpa kode negara supaya "08xx…" (13 digit) yang jadi "628xx…" (14 digit)
+		// tidak ikut tertolak hanya karena tambahan prefix 62.
+		if n := len(normalized) - 2; n < 9 || n > 12 {
+			return false, "panjang nomor Indonesia harus 10–13 digit (format 08xx) atau 11–14 digit (format 62xx)"
 		}
 	} else if len(normalized) < 10 || len(normalized) > 15 {
 		return false, "panjang nomor harus 10–15 digit"

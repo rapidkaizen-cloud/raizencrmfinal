@@ -4,9 +4,18 @@ import { useNavigate } from 'react-router-dom';
 import api from '../services/api';
 import logo from '../assets/logo-slaludiskon-login.png';
 
+// Ikut mengembalikan body respons: backend membedakan 403 "email belum diverifikasi"
+// (ada verification_required) dari 403 "akun dinonaktifkan", dan pesannya harus
+// ditampilkan apa adanya supaya user tahu harus menghubungi siapa.
 function responseStatus(error: unknown) {
   if (typeof error === 'object' && error && 'response' in error) {
-    return (error as { response?: { status?: number; headers?: Record<string, string> } }).response;
+    return (error as {
+      response?: {
+        status?: number;
+        headers?: Record<string, string>;
+        data?: { error?: string; verification_required?: boolean };
+      };
+    }).response;
   }
   return undefined;
 }
@@ -201,6 +210,14 @@ export default function Login() {
   //   render();
   // }, []);
 
+  // Interceptor axios menendang ke /login?disabled=1 saat akun dimatikan super admin
+  // di tengah sesi. Tampilkan alasannya, jangan biarkan halaman login kosong.
+  useEffect(() => {
+    if (new URLSearchParams(window.location.search).get('disabled') === '1') {
+      setError('Akun kamu dinonaktifkan. Hubungi admin.');
+    }
+  }, []);
+
   useEffect(() => {
     if (cooldown <= 0) return;
     const timer = window.setInterval(() => setCooldown((v) => Math.max(0, v - 1)), 1000);
@@ -230,8 +247,9 @@ export default function Login() {
         setCooldown(Number.isFinite(retryAfter) ? Math.min(Math.max(retryAfter, 30), 300) : 60);
         setError('Terlalu banyak percobaan. Tunggu sebentar lalu coba lagi.');
       } else if (response?.status === 403) {
-        setError('Email kamu belum diverifikasi. Cek inbox atau folder spam untuk link aktivasi.');
-        setNeedVerify(true);
+        // Link "kirim ulang verifikasi" hanya masuk akal kalau memang soal email.
+        setError(response.data?.error || 'Email kamu belum diverifikasi. Cek inbox atau folder spam untuk link aktivasi.');
+        setNeedVerify(response.data?.verification_required === true);
       } else if (!response || (response.status ?? 0) >= 500) {
         setError('Server belum siap. Coba lagi sebentar lagi.');
       } else {

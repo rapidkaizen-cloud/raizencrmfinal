@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { useDraftState } from '../draft';
 import {
   Box, Card, CardContent, Typography, Button, Stack, Chip, Switch, IconButton,
   Dialog, DialogTitle, DialogContent, DialogActions, TextField, Select, MenuItem, FormControl, InputLabel,
@@ -23,8 +24,10 @@ export default function AutoReplyPanel({ agentId }: { agentId: number }) {
   const { data: rules, isLoading } = useAutoReplies(agentId);
   const save = useSaveAutoReply(agentId);
   const del = useDeleteAutoReply(agentId);
-  const [open, setOpen] = useState(false);
-  const [form, setForm] = useState<Partial<AutoReply>>(EMPTY);
+  // Panel di-unmount saat pindah tab, jadi isian dialog disimpan sebagai draft per CS.
+  const k = (name: string) => `autoreply:${agentId}:${name}`;
+  const [open, setOpen] = useDraftState(k('open'), false);
+  const [form, setForm] = useDraftState<Partial<AutoReply>>(k('form'), EMPTY);
   const [errors, setErrors] = useState<Record<string, string>>({});
 
   const openNew = () => { setForm(EMPTY); setErrors({}); setOpen(true); };
@@ -40,6 +43,7 @@ export default function AutoReplyPanel({ agentId }: { agentId: number }) {
     if (!validate()) return;
     await save.mutateAsync(form);
     setOpen(false);
+    setForm(EMPTY);
   };
   const toggle = (r: AutoReply) => save.mutate({ id: r.id, enabled: !r.enabled });
   const remove = async (r: AutoReply) => { if (await swalConfirm('Hapus aturan ini?')) del.mutate(r.id); };

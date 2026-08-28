@@ -338,3 +338,19 @@ func TestBuildRetrievalQuery(t *testing.T) {
 		})
 	}
 }
+
+func TestNormalizeAIBaseURL(t *testing.T) {
+	cases := map[string]string{
+		"":                                    "",
+		"  https://api.groq.com/openai/v1/  ": "https://api.groq.com/openai/v1",
+		"api.penyedia.com/v1":                 "https://api.penyedia.com/v1",
+		"http://localhost:11434/v1":           "http://localhost:11434/v1",
+		"https://x.dev/v1/chat/completions":   "https://x.dev/v1",
+		"https://x.dev/v1/chat/completions/":  "https://x.dev/v1",
+	}
+	for in, want := range cases {
+		if got := NormalizeAIBaseURL(in); got != want {
+			t.Errorf("NormalizeAIBaseURL(%q) = %q, mau %q", in, got, want)
+		}
+	}
+}

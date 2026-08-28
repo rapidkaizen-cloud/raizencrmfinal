@@ -1,11 +1,18 @@
-import { Box, Stack, TextField, Typography } from '@mui/material';
+import { Box, Button, CircularProgress, Stack, TextField, Typography } from '@mui/material';
+import SaveIcon from '@mui/icons-material/Save';
+import CheckCircleIcon from '@mui/icons-material/CheckCircle';
 
 // DelayFields = kontrol "Jeda Kirim" yang dipakai bersama oleh Broadcast & Jadwal:
 // jeda acak antar pesan + jeda istirahat berkala. Validasi tetap di parent (lewat `error`).
+//
+// onSave (opsional) memunculkan tombol "Simpan sebagai default". Setelan ini disimpan
+// PER AKUN, bukan per nomor CS — satu orang bisa memegang beberapa nomor dan ritme
+// kirimnya mengikuti orangnya. Tanpa onSave, komponen tampil seperti semula.
 export default function DelayFields({
   minDelay, maxDelay, restEvery, restDuration,
   setMinDelay, setMaxDelay, setRestEvery, setRestDuration,
   error, onEditDelay,
+  onSave, saving = false, savedAsDefault = false,
 }: {
   minDelay: number;
   maxDelay: number;
@@ -17,6 +24,9 @@ export default function DelayFields({
   setRestDuration: (n: number) => void;
   error?: string;
   onEditDelay?: () => void;
+  onSave?: () => void;
+  saving?: boolean;
+  savedAsDefault?: boolean;
 }) {
   return (
     <Box>
@@ -51,6 +61,40 @@ export default function DelayFields({
           helperText=" "
           sx={{ width: { xs: '100%', sm: 190 } }} />
       </Stack>
+
+      {onSave && (
+        <Stack
+          direction={{ xs: 'column', sm: 'row' }}
+          spacing={1}
+          sx={{ alignItems: { xs: 'stretch', sm: 'center' }, mt: 0.5 }}
+        >
+          <Button
+            size="small"
+            variant="outlined"
+            onClick={onSave}
+            // Jeda yang tidak masuk akal jangan sampai tersimpan jadi default —
+            // kesalahannya akan terbawa ke semua blast berikutnya.
+            disabled={saving || !!error}
+            startIcon={saving ? <CircularProgress size={14} color="inherit" /> : <SaveIcon fontSize="small" />}
+          >
+            {saving ? 'Menyimpan…' : 'Simpan sebagai default'}
+          </Button>
+          {savedAsDefault && !saving && (
+            <Stack direction="row" spacing={0.5} sx={{ alignItems: 'center' }}>
+              <CheckCircleIcon color="success" sx={{ fontSize: 16 }} />
+              <Typography variant="caption" color="text.secondary">
+                Setelan ini sudah jadi default kamu
+              </Typography>
+            </Stack>
+          )}
+        </Stack>
+      )}
+
+      {onSave && (
+        <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 0.75 }}>
+          Tersimpan di akunmu, jadi ikut terpakai di semua nomor yang kamu pegang — di tab Blast maupun Jadwal Blast.
+        </Typography>
+      )}
     </Box>
   );
 }

@@ -16,21 +16,21 @@ import (
 
 // ConversationBrief = ringkasan operasional untuk CS di inbox (bukan dikirim ke pelanggan).
 type ConversationBrief struct {
-	ContactHint   string   `json:"contact_hint"`   // nama/panggilan bila terdeteksi
-	Intent        string   `json:"intent"`         // kebutuhan utama 1 kalimat
-	Products      []string `json:"products"`       // produk/layanan disebut
-	KeyFacts      []string `json:"key_facts"`      // fakta penting (alamat, ukuran, budget…)
-	OpenItems     []string `json:"open_items"`     // yang masih perlu ditindaklanjuti
-	RiskFlags     []string `json:"risk_flags"`     // refund, komplain, dll.
-	Stage         string   `json:"stage"`          // new|info|interest|transaction|issue|done
-	Summary       string   `json:"summary"`        // 2–4 kalimat padat
-	Source        string   `json:"source"`         // heuristic|ai|hybrid
-	MessageCount  int      `json:"message_count"`
-	LastChatID    uint     `json:"last_chat_id"`
-	UpdatedAt     string   `json:"updated_at"`
-	NeedsHuman    bool     `json:"needs_human"`
-	Stale         bool     `json:"stale"` // true bila cache ketinggalan vs chat terbaru
-	Confidence    float64  `json:"confidence"`
+	ContactHint  string   `json:"contact_hint"` // nama/panggilan bila terdeteksi
+	Intent       string   `json:"intent"`       // kebutuhan utama 1 kalimat
+	Products     []string `json:"products"`     // produk/layanan disebut
+	KeyFacts     []string `json:"key_facts"`    // fakta penting (alamat, ukuran, budget…)
+	OpenItems    []string `json:"open_items"`   // yang masih perlu ditindaklanjuti
+	RiskFlags    []string `json:"risk_flags"`   // refund, komplain, dll.
+	Stage        string   `json:"stage"`        // new|info|interest|transaction|issue|done
+	Summary      string   `json:"summary"`      // 2–4 kalimat padat
+	Source       string   `json:"source"`       // heuristic|ai|hybrid
+	MessageCount int      `json:"message_count"`
+	LastChatID   uint     `json:"last_chat_id"`
+	UpdatedAt    string   `json:"updated_at"`
+	NeedsHuman   bool     `json:"needs_human"`
+	Stale        bool     `json:"stale"` // true bila cache ketinggalan vs chat terbaru
+	Confidence   float64  `json:"confidence"`
 }
 
 type briefAIPayload struct {

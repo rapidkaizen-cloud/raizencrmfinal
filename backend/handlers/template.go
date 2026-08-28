@@ -38,7 +38,10 @@ func CreateTemplate(c *gin.Context) {
 		return
 	}
 	t := models.Template{AgentID: id, Title: req.Title, Body: req.Body, SortOrder: req.SortOrder}
-	if err := database.DB.Create(&t).Error; err != nil { c.JSON(500, gin.H{"error": "Gagal"}); return }
+	if err := database.DB.Create(&t).Error; err != nil {
+		c.JSON(500, gin.H{"error": "Gagal"})
+		return
+	}
 	c.JSON(201, gin.H{"data": t})
 }
 

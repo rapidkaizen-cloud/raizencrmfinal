@@ -2,6 +2,7 @@ import {
   memo, useCallback, useEffect, useMemo, useRef, useState,
   type ReactNode, type RefObject,
 } from 'react';
+import { useDraftState } from '../draft';
 import {
   Box, Typography, TextField, IconButton, Stack, Chip, Button, CircularProgress,
   Avatar, Dialog, DialogTitle, DialogContent, DialogActions, Alert, Collapse,
@@ -28,6 +29,7 @@ import PhoneOutlinedIcon from '@mui/icons-material/PhoneOutlined';
 import InfoOutlinedIcon from '@mui/icons-material/InfoOutlined';
 import {
   useContacts, useConversation, useConversationBrief, useRefreshConversationBrief,
+  usePauseAIContact, useResumeAIContact, useManualHandoffContact,
   useSendMessage, useSendMedia, postAgentTyping, useRevokeMessage, useResumeBot, useReanalyzeImage,
   useDeleteInboxConversation, useLoadOlderMessages,
 } from '../hooks';
@@ -773,8 +775,9 @@ const ChatComposer = memo(function ChatComposer({
     replyTo: { id: string; text: string } | null;
   }) => Promise<void>;
 }) {
-  const [text, setText] = useState('');
-  const [file, setFile] = useState<File | null>(null);
+  // Draft balasan disimpan per chat, jadi tidak hilang saat pindah tab atau pindah chat.
+  const [text, setText] = useDraftState(`inbox:${agentId}:${sender}:text`, '');
+  const [file, setFile] = useState<File | null>(null); // File tidak bisa disimpan sebagai draft
   const [sending, setSending] = useState(false);
   const fileInput = useRef<HTMLInputElement>(null);
   const typingActive = useRef(false);
@@ -782,9 +785,8 @@ const ChatComposer = memo(function ChatComposer({
   const senderRef = useRef(sender);
   senderRef.current = sender;
 
-  // Ganti chat → kosongkan composer, hentikan typing indicator.
+  // Ganti chat → composer ikut pindah ke draft chat tersebut, hentikan typing indicator.
   useEffect(() => {
-    setText('');
     setFile(null);
     if (fileInput.current) fileInput.current.value = '';
     if (typingTimer.current) {
@@ -826,7 +828,7 @@ const ChatComposer = memo(function ChatComposer({
   const handleChange = useCallback((value: string) => {
     setText(value);
     pulseTyping();
-  }, [pulseTyping]);
+  }, [pulseTyping, setText]);
 
   const doSend = useCallback(async () => {
     if (busy || sending) return;
@@ -846,7 +848,7 @@ const ChatComposer = memo(function ChatComposer({
     } finally {
       setSending(false);
     }
-  }, [busy, sending, text, file, replyTo, onSend, stopTyping]);
+  }, [busy, sending, text, file, replyTo, onSend, stopTyping, setText]);
 
   const isBusy = busy || sending;
   const canSend = Boolean(file || text.trim()) && !isBusy;
@@ -1004,9 +1006,10 @@ export default function InboxPanel({
   const isMobile = useMediaQuery(theme.breakpoints.down('md'));
 
   const { data: contacts, isLoading, isFetching } = useContacts(agentId);
-  const [sender, setSender] = useState('');
+  // Chat yang sedang dibuka ikut disimpan supaya balik ke chat yang sama saat kembali ke tab Inbox.
+  const [sender, setSender] = useDraftState(`inbox:${agentId}:sender`, '');
   const [mobileShowChat, setMobileShowChat] = useState(false);
-  const [search, setSearch] = useState('');
+  const [search, setSearch] = useDraftState(`inbox:${agentId}:search`, '');
 
   const { data: convo, isFetching: convoFetching } = useConversation(agentId, sender);
   const loadOlderMsgs = useLoadOlderMessages(agentId, sender);
@@ -1014,6 +1017,9 @@ export default function InboxPanel({
   const refreshBrief = useRefreshConversationBrief(agentId);
   const revokeMsg = useRevokeMessage(agentId);
   const sendMsg = useSendMessage(agentId);
+  const pauseAI = usePauseAIContact(agentId);
+  const resumeAI = useResumeAIContact(agentId);
+  const manualHandoff = useManualHandoffContact(agentId);
   const sendMedia = useSendMedia(agentId);
   const resumeBot = useResumeBot(agentId);
   const reanalyzeImage = useReanalyzeImage(agentId);
@@ -1032,14 +1038,18 @@ export default function InboxPanel({
 
   useEffect(() => {
     if (!sender && contacts?.length) setSender(contacts[0].sender);
-  }, [contacts, sender]);
+  }, [contacts, sender, setSender]);
 
+  // Buka chat kiriman dari tab Kontak hanya saat kiriman baru (n berubah), supaya chat yang
+  // sedang dibuka tidak dilempar balik ke chat lama tiap kali user kembali ke tab Inbox.
+  const [seedN, setSeedN] = useDraftState(`inbox:${agentId}:seedN`, 0);
   useEffect(() => {
-    if (seed?.value) {
+    if (seed?.value && seed.n !== seedN) {
       setSender(seed.value);
       setMobileShowChat(true);
+      setSeedN(seed.n);
     }
-  }, [seed?.n]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [seed, seedN, setSender, setSeedN]);
 
   useEffect(() => {
     didFirstScroll.current = false;
@@ -1124,7 +1134,7 @@ export default function InboxPanel({
     setSender(s);
     setMobileShowChat(true);
     setReplyTo(null);
-  }, []);
+  }, [setSender]);
 
   const deleteConversation = useCallback(async (target: string) => {
     const label = contacts?.find((c) => c.sender === target)?.name || `+${target}`;
@@ -1149,7 +1159,7 @@ export default function InboxPanel({
     } finally {
       setDeletingSender(null);
     }
-  }, [contacts, deleteConvo, sender]);
+  }, [contacts, deleteConvo, sender, setSender]);
 
   const handleReply = useCallback((id: string, t: string) => {
     setReplyTo({ id, text: t });
@@ -1607,6 +1617,49 @@ export default function InboxPanel({
                     : 'Nonaktif di agent'
               }
             />
+            {aiEnabled && (
+              <Stack direction="row" spacing={1} sx={{ pt: 0.5 }}>
+                {convo?.manual_pause_until && new Date(convo.manual_pause_until).getTime() > Date.now() ? (
+                  <Button
+                    size="small"
+                    variant="contained"
+                    color="success"
+                    disabled={resumeAI.isPending}
+                    onClick={() =>
+                      swalConfirm('Lanjutkan AI untuk customer ini?', 'Bot akan kembali membalas pesan otomatis.')
+                        .then((ok) => ok && resumeAI.mutate(sender))
+                    }
+                  >
+                    Lanjutkan AI
+                  </Button>
+                ) : (
+                  <Button
+                    size="small"
+                    variant="outlined"
+                    color="warning"
+                    disabled={pauseAI.isPending}
+                    onClick={() =>
+                      swalConfirm('Jeda AI untuk customer ini?', 'Bot berhenti membalas (termasuk auto-reply) sampai dinyalakan lagi. Chat sepenuhnya dipegang CS.')
+                        .then((ok) => ok && pauseAI.mutate(sender))
+                    }
+                  >
+                    Jeda AI
+                  </Button>
+                )}
+                <Button
+                  size="small"
+                  variant="outlined"
+                  color="error"
+                  disabled={manualHandoff.isPending}
+                  onClick={() =>
+                    swalConfirm('Pindahkan ke Butuh CS?', 'Percakapan masuk antrean Butuh CS. AI tetap melayani info aman sampai CS membalas, lalu diam.')
+                      .then((ok) => ok && manualHandoff.mutate(sender))
+                  }
+                >
+                  Ke CS
+                </Button>
+              </Stack>
+            )}
             <InfoRow
               label="Pesan di thread"
               value={convo?.total ? `${convo.data?.length || 0} dimuat dari ${convo.total} total pesan` : convo?.data ? `${convo.data.length} pesan` : '—'}

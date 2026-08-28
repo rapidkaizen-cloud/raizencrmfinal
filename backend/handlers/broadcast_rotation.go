@@ -42,7 +42,7 @@ const (
 	quarantineSoft       = "soft"
 	quarantineDisconnect = "disconnect"
 
-	softQuarantineTTL  = 10 * time.Minute
+	softQuarantineTTL       = 10 * time.Minute
 	disconnectCooldownLimit = 45 * time.Second
 	// Gagal sistemik beruntun sebelum soft-quarantine (bukan invalid recipient).
 	circuitBreakerThreshold = 4
@@ -819,7 +819,7 @@ func runBroadcastAgentWorker(broadcastID, agentID uint, b models.Broadcast, minD
 				log.Printf("Broadcast %d nomor %d terputus saat kirim ke %s — dialihkan", broadcastID, agentID, r.Number)
 				return
 			}
-			markRecipient(r.ID, "failed", sendErr.Error())
+			markRecipientAttempt(r.ID, "failed", sendErr.Error(), msg)
 			bumpBroadcastCounter(broadcastID, "failed")
 			if isSystemicSendFailure(sendErr) {
 				consecutiveSystemic++
@@ -834,7 +834,7 @@ func runBroadcastAgentWorker(broadcastID, agentID uint, b models.Broadcast, minD
 		} else {
 			now := time.Now()
 			database.DB.Model(&models.BroadcastRecipient{}).Where("id = ?", r.ID).
-				Updates(map[string]any{"status": "sent", "sent_at": &now, "error": ""})
+				Updates(map[string]any{"status": "sent", "sent_at": &now, "error": "", "sent_message": msg})
 			bumpBroadcastCounter(broadcastID, "sent")
 			sentSinceRest++
 			consecutiveSystemic = 0

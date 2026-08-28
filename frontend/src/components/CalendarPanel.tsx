@@ -1,4 +1,5 @@
 import { useState, type ReactNode } from 'react';
+import { useDraftState } from '../draft';
 import {
   Box, Typography, Card, CardContent, Button, Stack, IconButton, Chip, TextField,
   Dialog, DialogTitle, DialogContent, DialogActions, CircularProgress, Divider, Alert,
@@ -26,6 +27,7 @@ import WhatsAppEditor from './WhatsAppEditor';
 import TemplatePicker from './TemplatePicker';
 import PageHeader from './PageHeader';
 import DelayFields from './broadcast/DelayFields';
+import { useBlastDelay } from './broadcast/useBlastDelay';
 import BroadcastProgress from './broadcast/BroadcastProgress';
 import BroadcastQuarantineSummary from './broadcast/BroadcastQuarantineSummary';
 import { swalConfirm, swalToast } from '../services/swal';
@@ -109,8 +111,10 @@ export default function CalendarPanel({ agentId }: { agentId: number }) {
   const today = new Date();
   const [year, setYear] = useState(today.getFullYear());
   const [month, setMonth] = useState(today.getMonth());
-  const [selDate, setSelDate] = useState<string>(dateKeyFromDate(today));
-  const [formOpen, setFormOpen] = useState(false);
+  // Panel di-unmount saat pindah tab, jadi isian form jadwal disimpan sebagai draft per CS.
+  const k = (name: string) => `calendar:${agentId}:${name}`;
+  const [selDate, setSelDate] = useDraftState<string>(k('selDate'), dateKeyFromDate(today));
+  const [formOpen, setFormOpen] = useDraftState(k('formOpen'), false);
   const [detailId, setDetailId] = useState<number | null>(null);
 
   const { data: schedules } = useSchedules(agentId);
@@ -131,21 +135,24 @@ export default function CalendarPanel({ agentId }: { agentId: number }) {
     }
   };
 
-  const [time, setTime] = useState('09:00');
-  const [message, setMessage] = useState('');
-  const [recipients, setRecipients] = useState('');
-  const [targetType, setTargetType] = useState<'number' | 'group'>('number');
-  const [selectedJids, setSelectedJids] = useState<string[]>([]);
-  const [groupSearch, setGroupSearch] = useState('');
-  const [file, setFile] = useState<File | null>(null);
-  const [selectedProductId, setSelectedProductId] = useState<number | ''>('');
+  const [time, setTime] = useDraftState(k('time'), '09:00');
+  const [message, setMessage] = useDraftState(k('message'), '');
+  const [recipients, setRecipients] = useDraftState(k('recipients'), '');
+  const [targetType, setTargetType] = useDraftState<'number' | 'group'>(k('targetType'), 'number');
+  const [selectedJids, setSelectedJids] = useDraftState<string[]>(k('jids'), []);
+  const [groupSearch, setGroupSearch] = useDraftState(k('groupSearch'), '');
+  const [file, setFile] = useState<File | null>(null); // File tidak bisa disimpan sebagai draft
+  const [selectedProductId, setSelectedProductId] = useDraftState<number | ''>(k('product'), '');
   // Daftar grup dimuat hanya saat mode "Grup" dipilih di form jadwal (butuh WA tersambung).
   const { data: groups, isLoading: groupsLoading, error: groupsError } =
     useManagedGroups(agentId, formOpen && targetType === 'group');
-  const [minDelay, setMinDelay] = useState(10);
-  const [maxDelay, setMaxDelay] = useState(30);
-  const [restEvery, setRestEvery] = useState(25);
-  const [restDuration, setRestDuration] = useState(90);
+  // Jeda kirim memakai setelan default milik akun (sama dengan tab Blast),
+  // lengkap dengan tombol "Simpan sebagai default".
+  const {
+    minDelay, maxDelay, restEvery, restDuration,
+    setMinDelay, setMaxDelay, setRestEvery, setRestDuration,
+    delayProblem, saveDefault, saving: savingDelay, savedAsDefault,
+  } = useBlastDelay(k);
   const [err, setErr] = useState('');
   const [errors, setErrors] = useState<Record<string, string>>({});
 
@@ -175,11 +182,6 @@ export default function CalendarPanel({ agentId }: { agentId: number }) {
   const monthIssues = monthSchedules.filter(s => s.status === 'failed' || s.status === 'interrupted' || s.status === 'wa_restricted').length;
   const formRecipients = recipients.split('\n').map(l => l.trim()).filter(Boolean);
   const formRecipientCount = formRecipients.length;
-  const delayProblem = minDelay < 1 || maxDelay < 1
-    ? 'Jeda harus minimal 1 detik'
-    : maxDelay < minDelay
-      ? 'Jeda maksimal harus lebih besar atau sama dengan jeda minimal'
-      : '';
 
   const prevMonth = () => {
     if (month === 0) { setYear(y => y - 1); setMonth(11); } else setMonth(m => m - 1);
@@ -577,6 +579,7 @@ export default function CalendarPanel({ agentId }: { agentId: number }) {
                 setMinDelay={setMinDelay} setMaxDelay={setMaxDelay} setRestEvery={setRestEvery} setRestDuration={setRestDuration}
                 error={errors.delay || delayProblem || undefined}
                 onEditDelay={() => { if (errors.delay) setErrors(p => ({ ...p, delay: '' })); }}
+                onSave={saveDefault} saving={savingDelay} savedAsDefault={savedAsDefault}
               />
             </Box>
           </Box>

@@ -146,6 +146,41 @@ func Embed(text string) ([]float32, error) {
 	return resp.Data[0].Embedding, nil
 }
 
+// queryVector menghitung embedding satu teks query maksimal SEKALI, lalu dipakai bersama
+// oleh seluruh retrieval dalam pesan yang sama (knowledge + katalog produk). Sebelumnya tiap
+// bagian memanggil Embed() sendiri dengan teks identik → 2x biaya & latensi per pesan masuk.
+// Perhitungannya lazy: kalau retrieval berhenti lebih awal (agent tanpa knowledge & produk),
+// API embedding tidak pernah dipanggil sama sekali.
+type queryVector struct {
+	text string
+	once sync.Once
+	vec  []float32
+}
+
+func newQueryVector(text string) *queryVector {
+	return &queryVector{text: text}
+}
+
+// Vec mengembalikan vektor query, atau nil bila embedding nonaktif/gagal — pemanggil
+// otomatis jatuh ke keyword. Aman dipanggil pada penerima nil (jalur non-embedding & test).
+func (q *queryVector) Vec() []float32 {
+	if q == nil {
+		return nil
+	}
+	q.once.Do(func() {
+		if !EmbeddingEnabled() {
+			return
+		}
+		vec, err := Embed(q.text)
+		if err != nil {
+			log.Printf("Embedding: query gagal, retrieval lanjut pakai keyword: %v", err)
+			return
+		}
+		q.vec = vec
+	})
+	return q.vec
+}
+
 // EmbeddingModelInfo adalah opsi model yang dibaca langsung dari katalog OpenRouter.
 type EmbeddingModelInfo struct {
 	ID            string `json:"id"`

@@ -180,20 +180,66 @@ func parentFlowNode(s flowStructure, childID string) (string, bool) {
 	return "", false
 }
 
+// maxFlowTriggers membatasi banyaknya kata pemicu dalam satu alur supaya kolom Trigger
+// (255 karakter) tidak meluap dan pencocokan tiap pesan tetap murah.
+const maxFlowTriggers = 20
+
+// parseFlowTriggers memecah daftar kata pemicu yang dipisah koma (atau baris baru) menjadi
+// potongan yang sudah dirapikan. Duplikat dibuang tanpa membedakan huruf besar/kecil, jadi
+// "Menu, menu" dianggap satu kata pemicu saja.
+func parseFlowTriggers(trigger string) []string {
+	parts := strings.FieldsFunc(trigger, func(r rune) bool { return r == ',' || r == '\n' || r == '\r' })
+	out := make([]string, 0, len(parts))
+	seen := map[string]bool{}
+	for _, part := range parts {
+		kw := strings.TrimSpace(part)
+		if kw == "" {
+			continue
+		}
+		lower := strings.ToLower(kw)
+		if seen[lower] {
+			continue
+		}
+		seen[lower] = true
+		out = append(out, kw)
+	}
+	return out
+}
+
+// primaryFlowTrigger = kata pemicu pertama, dipakai untuk contoh di teks balasan
+// ("Ketik *menu* untuk membuka kembali").
+func primaryFlowTrigger(trigger string) string {
+	if list := parseFlowTriggers(trigger); len(list) > 0 {
+		return list[0]
+	}
+	return "menu"
+}
+
+// matchTrigger mengecek apakah pesan memicu alur. Trigger boleh berisi beberapa kata kunci
+// dipisah koma; cocok pada salah satunya sudah cukup. Selalu abaikan huruf besar/kecil.
 func matchTrigger(text, trigger, matchType string) bool {
 	t := strings.ToLower(strings.TrimSpace(text))
-	kw := strings.ToLower(strings.TrimSpace(trigger))
-	if t == "" || kw == "" {
+	if t == "" {
 		return false
 	}
-	switch matchType {
-	case "contains":
-		return containsWholeFlowTrigger(t, kw)
-	case "prefix":
-		return strings.HasPrefix(t, kw)
-	default: // exact
-		return t == kw
+	for _, raw := range parseFlowTriggers(trigger) {
+		kw := strings.ToLower(raw)
+		switch matchType {
+		case "exact":
+			if t == kw {
+				return true
+			}
+		case "prefix":
+			if strings.HasPrefix(t, kw) {
+				return true
+			}
+		default: // contains
+			if containsWholeFlowTrigger(t, kw) {
+				return true
+			}
+		}
 	}
+	return false
 }
 
 func containsWholeFlowTrigger(text, trigger string) bool {
@@ -370,14 +416,14 @@ func handleFlowMessage(agentID uint, sender, text, actionID string) (result flow
 	normalized := strings.ToLower(strings.TrimSpace(input))
 	if normalized == "keluar" || normalized == "batal" || normalized == "exit" {
 		clearFlowSession(agentID, sender)
-		return flowResult{handled: true, reply: "Baik, menu ditutup. Ketik *" + f.Trigger + "* kapan saja untuk membukanya lagi."}
+		return flowResult{handled: true, reply: "Baik, menu ditutup. Ketik *" + primaryFlowTrigger(f.Trigger) + "* kapan saja untuk membukanya lagi."}
 	}
 	if normalized == "0" || normalized == "kembali" || normalized == "back" {
 		if parentID, found := parentFlowNode(s, sess.NodeID); found {
 			return enterFlowAt(agentID, sender, s, parentID, f.DisplayMode)
 		}
 		clearFlowSession(agentID, sender)
-		return flowResult{handled: true, reply: "Menu ditutup. Ketik *" + f.Trigger + "* untuk membuka kembali."}
+		return flowResult{handled: true, reply: "Menu ditutup. Ketik *" + primaryFlowTrigger(f.Trigger) + "* untuk membuka kembali."}
 	}
 
 	opt, matched := matchOption(node, input)
@@ -421,7 +467,7 @@ func GetFlow(c *gin.Context) {
 	}
 	var f models.Flow
 	if database.DB.Where("agent_id = ?", id).First(&f).Error != nil {
-		c.JSON(200, gin.H{"data": gin.H{"agent_id": id, "enabled": false, "trigger": "menu", "match_type": "exact", "display_mode": "auto", "structure": "", "delay_min": 2, "delay_max": 4}})
+		c.JSON(200, gin.H{"data": gin.H{"agent_id": id, "enabled": false, "trigger": "menu", "match_type": "contains", "display_mode": "auto", "structure": "", "delay_min": 2, "delay_max": 4}})
 		return
 	}
 	c.JSON(200, gin.H{"data": f})
@@ -462,7 +508,7 @@ func SaveFlow(c *gin.Context) {
 		return
 	}
 	if strings.TrimSpace(req.MatchType) == "" {
-		req.MatchType = "exact"
+		req.MatchType = "contains"
 	}
 	if req.DisplayMode == "" {
 		req.DisplayMode = "auto"
@@ -495,12 +541,23 @@ func SaveFlow(c *gin.Context) {
 		c.JSON(400, gin.H{"error": "Cara cocok pemicu tidak valid"})
 		return
 	}
-	if strings.TrimSpace(req.Trigger) == "" {
-		req.Trigger = "menu"
+	triggers := parseFlowTriggers(req.Trigger)
+	if len(triggers) == 0 {
+		triggers = []string{"menu"}
 	}
-	req.Trigger = strings.TrimSpace(req.Trigger)
-	if len([]rune(req.Trigger)) > 64 {
-		c.JSON(400, gin.H{"error": "Kata pemicu maksimal 64 karakter"})
+	if len(triggers) > maxFlowTriggers {
+		c.JSON(400, gin.H{"error": fmt.Sprintf("Maksimal %d kata pemicu dalam satu alur", maxFlowTriggers)})
+		return
+	}
+	for _, kw := range triggers {
+		if len([]rune(kw)) > 64 {
+			c.JSON(400, gin.H{"error": "Setiap kata pemicu maksimal 64 karakter"})
+			return
+		}
+	}
+	req.Trigger = strings.Join(triggers, ", ")
+	if len([]rune(req.Trigger)) > 255 {
+		c.JSON(400, gin.H{"error": "Daftar kata pemicu terlalu panjang (maksimal 255 karakter)"})
 		return
 	}
 

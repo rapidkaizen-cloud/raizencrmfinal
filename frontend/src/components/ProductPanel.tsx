@@ -1,4 +1,5 @@
 import { useMemo, useRef, useState } from 'react';
+import { useDraftState } from '../draft';
 import {
   Accordion, AccordionDetails, AccordionSummary, Alert, Box, Button, Card, CardContent, Chip,
   Dialog, DialogActions, DialogContent, DialogTitle, Divider, FormControlLabel, Grid,
@@ -282,29 +283,34 @@ export default function ProductPanel({ agentId }: { agentId: number }) {
   const sendMut = useSendProduct(agentId);
   const generateProductAI = useGenerateProductAI(agentId);
 
-  const [open, setOpen] = useState(false);
+  // Panel di-unmount saat pindah tab, jadi isian dialog produk disimpan sebagai draft per CS.
+  const k = (key: string) => `product:${agentId}:${key}`;
+  const [open, setOpen] = useDraftState(k('open'), false);
   const [selectedOrder, setSelectedOrder] = useState<ProductOrder | null>(null);
   const [orderPage, setOrderPage] = useState(0);
   const [orderRowsPerPage, setOrderRowsPerPage] = useState(5);
-  const [editId, setEditId] = useState<number | null>(null);
-  const [name, setName] = useState('');
-  const [productType, setProductType] = useState<ProductType>('physical');
-  const [price, setPrice] = useState('');
-  const [description, setDescription] = useState('');
-  const [productDetails, setProductDetails] = useState<ProductDetailItem[]>(suggestedProductDetails('physical'));
-  const [knowledge, setKnowledge] = useState('');
-  const [aiSalesGuidance, setAISalesGuidance] = useState('');
-  const [image, setImage] = useState<File | null>(null);
-  const [imagePreview, setImagePreview] = useState('');
-  const [buttons, setButtons] = useState<ProductButtonConfig[]>(defaultButtons);
-  const [checkoutSteps, setCheckoutSteps] = useState<CheckoutStepConfig[]>(defaultSteps);
-  const [checkoutHandoff, setCheckoutHandoff] = useState(true);
-  const [checkoutSuccessMessage, setCheckoutSuccessMessage] = useState('Pesanan *{order_code}* berhasil dicatat. CS kami akan memeriksa dan melanjutkan pesanan ini.');
+  const [editId, setEditId] = useDraftState<number | null>(k('editId'), null);
+  const [name, setName] = useDraftState(k('name'), '');
+  const [productType, setProductType] = useDraftState<ProductType>(k('type'), 'physical');
+  const [price, setPrice] = useDraftState(k('price'), '');
+  const [description, setDescription] = useDraftState(k('description'), '');
+  const [productDetails, setProductDetails] = useDraftState<ProductDetailItem[]>(k('details'), suggestedProductDetails('physical'));
+  const [knowledge, setKnowledge] = useDraftState(k('knowledge'), '');
+  const [aiSalesGuidance, setAISalesGuidance] = useDraftState(k('aiGuidance'), '');
+  const [image, setImage] = useState<File | null>(null); // File tidak bisa disimpan sebagai draft
+  const [imagePreviewDraft, setImagePreview] = useDraftState(k('imagePreview'), '');
+  // Pratinjau blob: hanya hidup selama file-nya masih dipegang; setelah panel di-mount ulang
+  // file-nya sudah hilang, jadi pratinjaunya ikut dikosongkan (URL produk dari server tetap dipakai).
+  const imagePreview = !image && imagePreviewDraft.startsWith('blob:') ? '' : imagePreviewDraft;
+  const [buttons, setButtons] = useDraftState<ProductButtonConfig[]>(k('buttons'), defaultButtons());
+  const [checkoutSteps, setCheckoutSteps] = useDraftState<CheckoutStepConfig[]>(k('checkoutSteps'), defaultSteps());
+  const [checkoutHandoff, setCheckoutHandoff] = useDraftState(k('checkoutHandoff'), true);
+  const [checkoutSuccessMessage, setCheckoutSuccessMessage] = useDraftState(k('checkoutSuccess'), 'Pesanan *{order_code}* berhasil dicatat. CS kami akan memeriksa dan melanjutkan pesanan ini.');
   const fileRef = useRef<HTMLInputElement>(null);
 
-  const [sendOpen, setSendOpen] = useState(false);
-  const [sendPid, setSendPid] = useState<number | null>(null);
-  const [sendTo, setSendTo] = useState('');
+  const [sendOpen, setSendOpen] = useDraftState(k('sendOpen'), false);
+  const [sendPid, setSendPid] = useDraftState<number | null>(k('sendPid'), null);
+  const [sendTo, setSendTo] = useDraftState(k('sendTo'), '');
 
   const hasCheckout = useMemo(() => buttons.some(b => b.action === 'checkout'), [buttons]);
 
@@ -458,6 +464,7 @@ export default function ProductPanel({ agentId }: { agentId: number }) {
     try {
       await saveMut.mutateAsync({ id: editId ?? undefined, fd });
       setOpen(false);
+      setEditId(null);
       resetForm();
       swalToast(editId ? 'Produk diperbarui' : 'Produk ditambahkan', 'success');
     } catch (e: any) {

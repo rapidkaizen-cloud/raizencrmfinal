@@ -1,10 +1,11 @@
 import { useState, useEffect, useMemo, useRef, Fragment } from 'react';
+import type { ReactNode } from 'react';
 import {
   Box, Card, CardContent, Typography, Button, Chip, CircularProgress, TextField,
   Stack, IconButton, Paper, Grid, Select, MenuItem, FormControl, InputLabel, Divider,
   Switch, FormControlLabel, Checkbox, Dialog, DialogTitle, DialogContent, DialogActions, Link,
   Badge, Popover, Avatar, Alert, LinearProgress, ToggleButton, ToggleButtonGroup,
-  Accordion, AccordionSummary, AccordionDetails, FormHelperText, Tooltip,
+  Accordion, AccordionSummary, AccordionDetails, FormHelperText, Tooltip, Autocomplete,
 } from '@mui/material';
 import LogoutIcon from '@mui/icons-material/Logout';
 import AddIcon from '@mui/icons-material/Add';
@@ -27,10 +28,12 @@ import FollowUpIcon from '@mui/icons-material/ScheduleSendOutlined';
 import ShieldIcon from '@mui/icons-material/ShieldOutlined';
 import ContactsIcon from '@mui/icons-material/ContactsOutlined';
 import PersonIcon from '@mui/icons-material/Person';
+import GroupIcon from '@mui/icons-material/Group';
 import { QRCodeSVG } from 'qrcode.react';
 import logo from '../assets/logo-slaludiskon.png';
 import api from '../services/api';
 import { swalConfirm, swalAlert, swalToast } from '../services/swal';
+import { clearDrafts } from '../draft';
 import SettingsIcon from '@mui/icons-material/Settings';
 import AutoAwesomeIcon from '@mui/icons-material/AutoAwesome';
 import SmartToyIcon from '@mui/icons-material/SmartToyOutlined';
@@ -45,6 +48,9 @@ import TestChatPanel from '../components/TestChatPanel';
 import BroadcastPanel from '../components/BroadcastPanel';
 import CalendarPanel from '../components/CalendarPanel';
 import AutoReplyPanel from '../components/AutoReplyPanel';
+import LearningPanel from '../components/LearningPanel';
+import MediaAssetsPanel from '../components/MediaAssetsPanel';
+import MetaCapiPanel from '../components/MetaCapiPanel';
 import FlowPanel from '../components/FlowPanel';
 import ApiPanel from '../components/ApiPanel';
 import ApiIcon from '@mui/icons-material/ApiOutlined';
@@ -57,7 +63,10 @@ import FollowUpPanel from '../components/FollowUpPanel';
 import ProductPanel from '../components/ProductPanel';
 import GroupGuardPanel from '../components/GroupGuardPanel';
 import StatusPanel from '../components/StatusPanel';
+import UsersPanel from '../components/UsersPanel';
 import AutoStoriesIcon from '@mui/icons-material/AutoStoriesOutlined';
+import PsychologyIcon from '@mui/icons-material/PsychologyOutlined';
+import PermMediaOutlinedIcon from '@mui/icons-material/PermMediaOutlined';
 import PageHeader from '../components/PageHeader';
 import {
   useAgents, useAgentStatuses, useAgentStatus, useAgentKnowledge,
@@ -68,9 +77,11 @@ import {
   useRegeneratePersona, useStopTraining,
   useAgentConnectPairing,
   useAIForms, useSaveAIForm, useDeleteAIForm, useAIFormSubmissions,
+  useMe,
 } from '../hooks';
 
-import type { Agent, KnowledgeItem, AIForm, AIFormStepConfig, AIFormStepType } from '../types';
+import { FEATURE_AI, FEATURE_AKUN, hasFeature, currentUser } from '../types';
+import type { Agent, KnowledgeItem, AIForm, AIFormStepConfig, AIFormStepType, User } from '../types';
 
 type AgentAIView = 'overview' | 'persona' | 'knowledge' | 'forms';
 
@@ -196,7 +207,13 @@ function knowledgeQuality(items: KnowledgeItem[]) {
   return { tagged, detailed, sourceCount: sources.size, topics, suggestions };
 }
 
-const NAV_GROUPS = [
+// Item menu sidebar.
+// feature  = menu hanya tampil kalau user punya fitur tsb (super admin selalu punya).
+// superOnly = menu hanya tampil untuk super admin, tidak bisa di-grant lewat fitur.
+type NavItem = { id: string; label: string; icon: ReactNode; feature?: string; superOnly?: boolean };
+type NavGroup = { section: string; items: NavItem[] };
+
+const NAV_GROUPS: NavGroup[] = [
   { section: '', items: [
     { id: 'dashboard', label: 'Dashboard', icon: <DashboardIcon fontSize="small" /> },
   ] },
@@ -206,11 +223,14 @@ const NAV_GROUPS = [
     { id: 'handoff', label: 'Butuh CS', icon: <SupportAgentIcon fontSize="small" /> },
   ] },
   { section: 'AI & Otomasi', items: [
-    { id: 'agent-ai', label: 'Asisten AI', icon: <SmartToyIcon fontSize="small" /> },
+    { id: 'agent-ai', label: 'Asisten AI', icon: <SmartToyIcon fontSize="small" />, feature: FEATURE_AI },
     { id: 'auto-reply', label: 'Auto-Reply', icon: <RuleIcon fontSize="small" /> },
+    { id: 'learning', label: 'AI Learning', icon: <PsychologyIcon fontSize="small" />, feature: FEATURE_AI },
     { id: 'alur', label: 'Alur Otomatis', icon: <AccountTreeIcon fontSize="small" /> },
     { id: 'template', label: 'Template', icon: <TemplateIcon fontSize="small" /> },
+    { id: 'media', label: 'Media', icon: <PermMediaOutlinedIcon fontSize="small" /> },
     { id: 'produk', label: 'Produk', icon: <KnowledgeIcon fontSize="small" /> },
+    { id: 'meta', label: 'Meta CAPI', icon: <AutoAwesomeIcon fontSize="small" /> },
     { id: 'coba-chat', label: 'Simulasi AI', icon: <ChatIcon fontSize="small" /> },
   ] },
   { section: 'Grup', items: [
@@ -223,20 +243,50 @@ const NAV_GROUPS = [
     { id: 'follow-up', label: 'Follow-up', icon: <FollowUpIcon fontSize="small" /> },
   ] },
   { section: 'Akun', items: [
-    { id: 'ai-model', label: 'AI & Model', icon: <AutoAwesomeIcon fontSize="small" /> },
-    { id: 'widget', label: 'Widget & Link', icon: <WidgetsIcon fontSize="small" /> },
-    { id: 'api', label: 'REST API', icon: <ApiIcon fontSize="small" /> },
-    { id: 'settings', label: 'Pengaturan', icon: <SettingsIcon fontSize="small" /> },
-    
+    // API key AI global dipakai seluruh instalasi, jadi endpoint-nya RequireSuperAdmin()
+    // dan tidak bisa di-grant. Ditandai superOnly supaya pemegang fitur "akun" tidak
+    // masuk ke tab yang semua tombolnya dibalas "Akses khusus super admin".
+    { id: 'ai-model', label: 'AI & Model', icon: <AutoAwesomeIcon fontSize="small" />, superOnly: true },
+    { id: 'widget', label: 'Widget & Link', icon: <WidgetsIcon fontSize="small" />, feature: FEATURE_AKUN },
+    { id: 'api', label: 'REST API', icon: <ApiIcon fontSize="small" />, feature: FEATURE_AKUN },
+    { id: 'settings', label: 'Pengaturan', icon: <SettingsIcon fontSize="small" />, feature: FEATURE_AKUN },
+    { id: 'akun-tim', label: 'Tim & Akses', icon: <GroupIcon fontSize="small" />, superOnly: true },
   ] },
 ];
-const NAV_ITEMS = NAV_GROUPS.flatMap(g => g.items);
+
+// Hak akses menu untuk user yang sedang login (super admin selalu boleh semua).
+type NavAccess = { isSuper: boolean; canAI: boolean; canAkun: boolean };
+
+function navAccessOf(u: User | null): NavAccess {
+  return {
+    isSuper: !!(u && u.is_super_admin),
+    canAI: hasFeature(u, FEATURE_AI),
+    canAkun: hasFeature(u, FEATURE_AKUN),
+  };
+}
+
+// visibleNavGroups menyaring menu sesuai hak akses. Section yang seluruh itemnya
+// tersembunyi ikut dibuang supaya judul section-nya tidak ikut tampil.
+function visibleNavGroups(acc: NavAccess): NavGroup[] {
+  const boleh = (item: NavItem) => {
+    if (item.superOnly) return acc.isSuper;
+    if (item.feature === FEATURE_AI) return acc.canAI;
+    if (item.feature === FEATURE_AKUN) return acc.canAkun;
+    return true;
+  };
+  return NAV_GROUPS
+    .map(g => ({ ...g, items: g.items.filter(boleh) }))
+    .filter(g => g.items.length > 0);
+}
 
 export default function Dashboard() {
   const [tab, setTab] = useState(() => {
     const saved = localStorage.getItem('wai_tab');
     const normalized = saved === 'knowledge' ? 'agent-ai' : saved;
-    const valid = !!normalized && NAV_ITEMS.some(n => n.id === normalized);
+    // Tab tersimpan hanya dipakai kalau menunya memang boleh dilihat user ini
+    // (fail-closed: hak akses dibaca dari localStorage, nanti dikoreksi lagi oleh /me).
+    const terlihat = visibleNavGroups(navAccessOf(currentUser())).flatMap(g => g.items);
+    const valid = !!normalized && terlihat.some(n => n.id === normalized);
     return valid && normalized ? normalized : 'dashboard';
   });
   const [agentAIView, setAgentAIView] = useState<AgentAIView>(() =>
@@ -308,6 +358,13 @@ export default function Dashboard() {
   });
   const [wizardLoading, setWizardLoading] = useState(false);
   const user = JSON.parse(localStorage.getItem('user') || '{}') as { name?: string; username?: string; email?: string; role?: string; phone?: string };
+  // ---- Hak akses menu ----
+  // Sumber utama: GET /me (biar pencabutan/pemberian akses langsung terasa tanpa logout).
+  // Selama query belum selesai, pakai data localStorage; kalau dua-duanya kosong -> tidak boleh apa-apa.
+  const { data: me } = useMe();
+  const access = useMemo(() => navAccessOf(me || currentUser()), [me]);
+  const { isSuper: isSuperAdmin, canAI, canAkun } = access;
+  const visibleGroups = useMemo(() => visibleNavGroups(access), [access]);
   const [profileAnchor, setProfileAnchor] = useState<HTMLElement | null>(null);
   const [manageOpen, setManageOpen] = useState(false);
   const [addOpen, setAddOpen] = useState(false);
@@ -320,9 +377,12 @@ export default function Dashboard() {
   const [profileModalOpen, setProfileModalOpen] = useState(false);
   const [apiKey, setApiKey] = useState('');
   const [deepseekKey, setDeepseekKey] = useState('');
-  const [chatProvider, setChatProvider] = useState('deepseek-direct'); // deepseek-direct | openrouter
+  const [chatProvider, setChatProvider] = useState('deepseek-direct'); // deepseek-direct | openrouter | custom
   const [apiModel, setApiModel] = useState('deepseek/deepseek-chat');
   const [deepseekModel, setDeepseekModel] = useState('deepseek-chat');
+  const [customBaseUrl, setCustomBaseUrl] = useState('');
+  const [customKey, setCustomKey] = useState('');
+  const [customModel, setCustomModel] = useState('');
   const [visionModel, setVisionModel] = useState('');
   const [embeddingModel, setEmbeddingModel] = useState('openai/text-embedding-3-small');
   const [embeddingModels, setEmbeddingModels] = useState<EmbeddingModelOption[]>([]);
@@ -529,28 +589,46 @@ export default function Dashboard() {
   }, [agents, agentId]);
 
   // ---- Isi field persona saat ganti CS ----
-
+  //
+  // Daftar CS ikut di-refetch tiap panel lain di-mount (staleTime 30 detik) dan tiap ada mutasi,
+  // sehingga array `agents` sering berganti identitas. Tanpa penjaga di bawah, efek ini akan
+  // menimpa isian persona/pengaturan yang belum disimpan setiap kali user pindah tab/menu.
+  const filledAgent = useRef<number | null>(null);
+  const filledServerKey = useRef('');
   useEffect(() => {
     if (!agentId) return;
-    setKnowledgePage(0);
     const a = agents.find(x => x.id === agentId);
-    if (a) {
-      const settings = settingsFromAgent(a);
-      setAgentName(settings.name); setPrompt(settings.system_prompt); setTone(settings.tone);
-      setAiEnabled(a.ai_enabled !== false);
-      setAutoRead(settings.auto_read);
-      setAIReplyDelayMin(settings.ai_reply_delay_min); setAIReplyDelayMax(settings.ai_reply_delay_max);
-      setGreetEnabled(settings.greeting_enabled); setGreetMsg(settings.greeting_message);
-      setBhEnabled(settings.business_hours_enabled); setBhStart(settings.business_start);
-      setBhEnd(settings.business_end); setAwayMsg(settings.away_message);
-      setSettingsBaseline(settingsKey(settings));
+    if (!a) return;
+    const settings = settingsFromAgent(a);
+    const serverKey = settingsKey(settings);
+    const switchedAgent = filledAgent.current !== agentId;
+    setAiEnabled(a.ai_enabled !== false); // saklar AI selalu ikut server (bukan isian ketikan)
+    if (!switchedAgent) {
+      if (serverKey === filledServerKey.current) return; // data server tidak berubah
+      if (hasUnsavedSettings) return;                    // ada editan belum disimpan -> jangan ditimpa
     }
-  }, [agentId, agents]);
+    filledAgent.current = agentId;
+    filledServerKey.current = serverKey;
+    if (switchedAgent) setKnowledgePage(0);
+    setAgentName(settings.name); setPrompt(settings.system_prompt); setTone(settings.tone);
+    setAutoRead(settings.auto_read);
+    setAIReplyDelayMin(settings.ai_reply_delay_min); setAIReplyDelayMax(settings.ai_reply_delay_max);
+    setGreetEnabled(settings.greeting_enabled); setGreetMsg(settings.greeting_message);
+    setBhEnabled(settings.business_hours_enabled); setBhStart(settings.business_start);
+    setBhEnd(settings.business_end); setAwayMsg(settings.away_message);
+    setSettingsBaseline(serverKey);
+  }, [agentId, agents, hasUnsavedSettings]);
 
   // ---- Simpan tab & CS ke localStorage ----
 
   useEffect(() => { localStorage.setItem('wai_tab', tab); }, [tab]);
   useEffect(() => { if (agentId) localStorage.setItem('wai_agent', String(agentId)); }, [agentId]);
+
+  // Kalau tab yang sedang dibuka jadi tidak boleh dilihat (mis. hak akses dicabut
+  // super admin saat user masih login), tendang balik ke Dashboard.
+  useEffect(() => {
+    if (!visibleGroups.some(g => g.items.some(i => i.id === tab))) setTab('dashboard');
+  }, [visibleGroups, tab]);
 
   // ---- QR: auto-tutup saat tersambung, dan hitung mundur masa berlaku QR ----
   useEffect(() => {
@@ -625,17 +703,24 @@ export default function Dashboard() {
     if (chatProvider) apiConfig.chat_provider = chatProvider;
     if (apiModel) apiConfig.api_model = apiModel;
     if (deepseekModel) apiConfig.deepseek_model = deepseekModel;
+    if (customBaseUrl) apiConfig.custom_base_url = customBaseUrl.trim();
+    if (customKey && !customKey.includes('*')) apiConfig.custom_api_key = customKey;
+    if (customModel) apiConfig.custom_model = customModel.trim();
     if (visionModel) apiConfig.vision_model = visionModel;
     if (embeddingModel) apiConfig.embedding_model = embeddingModel;
     if (Object.keys(apiConfig).length === 0) {
       swalToast('Tidak ada perubahan untuk disimpan', 'warning');
       return;
     }
+    if (chatProvider === 'custom' && (!apiConfig.custom_base_url || !apiConfig.custom_model)) {
+      swalToast('Base URL dan nama model wajib diisi untuk provider custom', 'warning');
+      return;
+    }
     try {
       await api.put('/settings/api-config', apiConfig);
       swalToast('Konfigurasi AI disimpan. Model langsung aktif.', 'success');
       // Refresh daftar model setelah simpan (karena api key mungkin baru)
-      if (apiConfig.api_key || apiConfig.deepseek_api_key) void loadChatModels();
+      if (apiConfig.api_key || apiConfig.deepseek_api_key || apiConfig.custom_api_key || apiConfig.custom_base_url) void loadChatModels();
       if (apiConfig.api_key) {
         void loadVisionModels();
         void loadEmbeddingModels();
@@ -696,10 +781,13 @@ export default function Dashboard() {
       if (cfg.chat_provider) setChatProvider(cfg.chat_provider);
       if (cfg.api_model) setApiModel(cfg.api_model);
       if (cfg.deepseek_model) setDeepseekModel(cfg.deepseek_model);
+      if (cfg.custom_base_url) setCustomBaseUrl(cfg.custom_base_url);
+      if (cfg.custom_api_key) setCustomKey(cfg.custom_api_key);
+      if (cfg.custom_model) setCustomModel(cfg.custom_model);
       if (cfg.vision_model) setVisionModel(cfg.vision_model);
       if (cfg.embedding_model) setEmbeddingModel(cfg.embedding_model);
       // Katalog chat ikut provider tersimpan; vision & embedding selalu lewat OpenRouter.
-      if (cfg.api_key || cfg.deepseek_api_key) void loadChatModels(cfg.chat_provider || '');
+      if (cfg.api_key || cfg.deepseek_api_key || cfg.custom_base_url) void loadChatModels(cfg.chat_provider || '');
       if (cfg.api_key) {
         void loadVisionModels();
         void loadEmbeddingModels();
@@ -707,20 +795,24 @@ export default function Dashboard() {
     } catch { /* belum ada config */ }
   };
 
-  // Model chat disimpan terpisah per provider: id DeepSeek ("deepseek-chat") dan
-  // id OpenRouter ("deepseek/deepseek-chat") tidak saling kompatibel.
+  // Model chat disimpan terpisah per provider: id DeepSeek ("deepseek-chat"), id
+  // OpenRouter ("deepseek/deepseek-chat"), dan id gateway custom tidak saling kompatibel.
   const isDeepSeekDirect = chatProvider === 'deepseek-direct';
-  const chatProviderName = isDeepSeekDirect ? 'DeepSeek' : 'OpenRouter';
+  const isCustomProvider = chatProvider === 'custom';
+  const chatProviderName = isCustomProvider ? 'gateway custom' : isDeepSeekDirect ? 'DeepSeek' : 'OpenRouter';
   const chatModelLabel = `Model chat ${chatProviderName}`;
-  const chatModelValue = isDeepSeekDirect ? deepseekModel : apiModel;
-  const setChatModelValue = isDeepSeekDirect ? setDeepseekModel : setApiModel;
+  const chatModelValue = isCustomProvider ? customModel : isDeepSeekDirect ? deepseekModel : apiModel;
+  const setChatModelValue = isCustomProvider ? setCustomModel : isDeepSeekDirect ? setDeepseekModel : setApiModel;
 
-  // Auto-load config saat membuka tab AI & Model
+  // Auto-load config saat membuka tab AI & Model.
+  // Cukup sekali per sesi: kalau dimuat ulang tiap kali tab dibuka, API key/model yang
+  // sedang diketik tapi belum disimpan akan ketimpa nilai lama dari server.
+  const apiConfigLoaded = useRef(false);
   useEffect(() => {
-    if (tab === 'ai-model' && !chatModels.length && !visionModels.length && !embeddingModels.length) {
-      void loadAPIConfig();
-    }
-  }, [tab]);
+    if (tab !== 'ai-model' || apiConfigLoaded.current) return;
+    apiConfigLoaded.current = true;
+    void loadAPIConfig();
+  }, [tab]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const saveAgent = async () => {
     const e: Record<string, string> = {};
@@ -924,7 +1016,8 @@ export default function Dashboard() {
 
   const dotColor = (s?: string) => (s === 'connected' ? '#25D366' : s === 'qr' || s === 'connecting' ? '#ffa726' : '#bdbdbd');
 
-  const logout = () => { localStorage.clear(); window.location.href = '/login'; };
+  // Draft form ikut dibersihkan supaya isian user sebelumnya tidak terbawa ke user berikutnya.
+  const logout = () => { localStorage.clear(); clearDrafts(); window.location.href = '/login'; };
   const sc = status === 'connected' ? 'success' : status === 'qr' || status === 'connecting' ? 'warning' : 'error';
   const sl = status === 'connected' ? 'Online' : status === 'connecting' ? 'Menyambung…' : status === 'qr' ? 'Scan QR' : 'Offline';
   const currentAgent = agents.find(a => a.id === agentId);
@@ -1002,11 +1095,14 @@ export default function Dashboard() {
             </Tooltip>
           </Stack>
 
-          <Box sx={{ width: { xs: 'auto', md: '100%' }, flexShrink: 0 }}>
-            <Button fullWidth variant="outlined" startIcon={<AddIcon />} onClick={openAddAgent} disabled={createAgentMut.isPending}>
-              Tambah
-            </Button>
-          </Box>
+          {/* Tambah CS hanya untuk user yang punya fitur akun */}
+          {canAkun && (
+            <Box sx={{ width: { xs: 'auto', md: '100%' }, flexShrink: 0 }}>
+              <Button fullWidth variant="outlined" startIcon={<AddIcon />} onClick={openAddAgent} disabled={createAgentMut.isPending}>
+                Tambah
+              </Button>
+            </Box>
+          )}
           <IconButton aria-label="Logout" onClick={logout} color="error" sx={{ display: { xs: 'inline-flex', md: 'none' }, ml: 'auto' }}>
             <LogoutIcon fontSize="small" />
           </IconButton>
@@ -1026,7 +1122,7 @@ export default function Dashboard() {
             scrollbarWidth: 'thin',
           }}
         >
-          {NAV_GROUPS.map((group, gi) => (
+          {visibleGroups.map((group, gi) => (
             <Fragment key={group.section || 'main'}>
               {group.section && (
                 <Typography
@@ -1238,8 +1334,15 @@ export default function Dashboard() {
                     {setupIssues.length > 0 && (
                       <Alert severity="warning" icon={false} sx={{ mt: 1.5 }}>
                         <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1} sx={{ alignItems: { xs: 'flex-start', sm: 'center' }, justifyContent: 'space-between' }}>
-                          <Typography variant="body2">{setupIssues[0]}</Typography>
-                          <Button size="small" variant="contained" onClick={() => openAgentAI('overview')} sx={{ flexShrink: 0 }}>Buka Asisten AI</Button>
+                          <Typography variant="body2">
+                            {setupIssues[0]}
+                            {/* Tanpa fitur "ai" tab Asisten AI tidak bisa dibuka, jadi jangan
+                                kasih tombol mati — arahkan ke orang yang bisa membereskan. */}
+                            {!canAI && ' Minta super admin melengkapinya lewat menu Asisten AI.'}
+                          </Typography>
+                          {canAI && (
+                            <Button size="small" variant="contained" onClick={() => openAgentAI('overview')} sx={{ flexShrink: 0 }}>Buka Asisten AI</Button>
+                          )}
                         </Stack>
                       </Alert>
                     )}
@@ -2006,7 +2109,7 @@ export default function Dashboard() {
           <Box>
             <PageHeader
               title={<><AutoAwesomeIcon sx={{ mr: 1, verticalAlign: 'middle' }} />AI & Model</>}
-              subtitle="Atur API key OpenRouter serta model untuk chat, pemahaman gambar, dan embedding knowledge."
+              subtitle="Atur provider AI (OpenRouter, DeepSeek Direct, atau gateway sendiri) serta model untuk chat, pemahaman gambar, dan embedding knowledge."
             />
 
             <Card sx={{ mb: 1.5 }}>
@@ -2031,13 +2134,14 @@ export default function Dashboard() {
               </CardContent>
             </Card>
 
-            {/* DeepSeek Direct API */}
+            {/* Provider chat: DeepSeek Direct / OpenRouter / gateway sendiri */}
             <Card sx={{ mb: 1.5 }}>
               <CardContent>
-                <Typography variant="subtitle2" sx={{ fontWeight: 700, mb: 0.5 }}>DeepSeek Direct · lebih hemat 90%</Typography>
+                <Typography variant="subtitle2" sx={{ fontWeight: 700, mb: 0.5 }}>Provider chat AI</Typography>
                 <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 1.5 }}>
-                  API langsung DeepSeek untuk chat AI. Lebih murah ($0.27/M input) dan cepat. Buat key di{' '}
+                  Pilih sumber model untuk membalas chat. DeepSeek Direct paling hemat ($0.27/M input) — buat key di{' '}
                   <Link href="https://platform.deepseek.com" target="_blank" rel="noopener">platform.deepseek.com</Link>.
+                  Punya gateway sendiri? Pakai pilihan Custom.
                 </Typography>
 
                 <FormControl size="small" fullWidth sx={{ mb: 1.5 }}>
@@ -2049,6 +2153,7 @@ export default function Dashboard() {
                   >
                     <MenuItem value="deepseek-direct">DeepSeek Direct (rekomendasi — hemat)</MenuItem>
                     <MenuItem value="openrouter">OpenRouter (supermarket model)</MenuItem>
+                    <MenuItem value="custom">Custom (base URL & API key sendiri)</MenuItem>
                   </Select>
                 </FormControl>
 
@@ -2063,6 +2168,35 @@ export default function Dashboard() {
                     placeholder="sk-..."
                     helperText={deepseekKey.includes('*') ? 'API key sudah tersimpan.' : 'Key disimpan terenkripsi.'}
                   />
+                )}
+
+                {isCustomProvider && (
+                  <Stack spacing={1.5}>
+                    <TextField
+                      label="Base URL"
+                      size="small"
+                      fullWidth
+                      value={customBaseUrl}
+                      onChange={e => setCustomBaseUrl(e.target.value)}
+                      placeholder="https://api.penyedia.com/v1"
+                      helperText="Endpoint harus kompatibel OpenAI (mis. Groq, Together, LiteLLM, Azure, Ollama, LM Studio). Tulis sampai /v1 saja — path /chat/completions ditambahkan otomatis."
+                    />
+                    <TextField
+                      label="API Key"
+                      size="small"
+                      type="password"
+                      fullWidth
+                      value={customKey}
+                      onChange={e => setCustomKey(e.target.value)}
+                      placeholder="sk-..."
+                      helperText={customKey.includes('*')
+                        ? 'API key sudah tersimpan. Biarkan apa adanya jika tidak ingin mengganti.'
+                        : 'Key disimpan terenkripsi. Gateway lokal yang tidak butuh key boleh diisi bebas, mis. "local".'}
+                    />
+                    <Alert severity="info" sx={{ py: 0.25 }}>
+                      Nama model diisi di kartu <b>Model percakapan</b> di bawah. Vision & embedding tetap lewat OpenRouter.
+                    </Alert>
+                  </Stack>
                 )}
               </CardContent>
             </Card>
@@ -2126,7 +2260,25 @@ export default function Dashboard() {
                   </Button>
                 </Stack>
 
-                {chatModels.length > 0 ? (
+                {isCustomProvider ? (
+                  <Autocomplete
+                    freeSolo
+                    size="small"
+                    options={chatModels.map(m => m.id)}
+                    value={customModel}
+                    inputValue={customModel}
+                    onInputChange={(_, v) => setCustomModel(v)}
+                    renderInput={params => (
+                      <TextField
+                        {...params}
+                        label="Nama model"
+                        placeholder="mis. llama-3.3-70b-versatile"
+                        helperText={chatModelsError
+                          || 'Ketik nama model persis seperti di dokumentasi penyedia. Tombol "Muat ulang model" mencoba mengambil daftarnya — tidak semua gateway menyediakan endpoint /models.'}
+                      />
+                    )}
+                  />
+                ) : chatModels.length > 0 ? (
                   <FormControl fullWidth size="small">
                     <InputLabel>{chatModelLabel}</InputLabel>
                     <Select
@@ -2231,7 +2383,7 @@ export default function Dashboard() {
               <Button
                 variant="contained"
                 onClick={saveAPIConfigOnly}
-                disabled={!apiKey}
+                disabled={!apiKey && !deepseekKey && !(isCustomProvider && customBaseUrl && customModel)}
                 startIcon={<AutoAwesomeIcon />}
                 fullWidth
                 sx={{ fontWeight: 700 }}
@@ -2316,12 +2468,15 @@ export default function Dashboard() {
               </CardContent>
             </Card>
 
-            <Card sx={{ border: '1px solid #f5c2c7' }}>
-              <CardContent>
-                <Typography variant="subtitle2" color="error" sx={{ mb: 1 }}>Zona Berbahaya</Typography>
-                <Button variant="outlined" color="error" startIcon={<DeleteIcon />} onClick={deleteAgent} disabled={deleteAgentMut.isPending}>Hapus CS ini</Button>
-              </CardContent>
-            </Card>
+            {/* Hapus CS hanya untuk user yang punya fitur akun */}
+            {canAkun && (
+              <Card sx={{ border: '1px solid #f5c2c7' }}>
+                <CardContent>
+                  <Typography variant="subtitle2" color="error" sx={{ mb: 1 }}>Zona Berbahaya</Typography>
+                  <Button variant="outlined" color="error" startIcon={<DeleteIcon />} onClick={deleteAgent} disabled={deleteAgentMut.isPending}>Hapus CS ini</Button>
+                </CardContent>
+              </Card>
+            )}
           </Box>
         )}
 
@@ -2391,16 +2546,20 @@ export default function Dashboard() {
           </Box>
         )}
         {tab === 'coba-chat' && <TestChatPanel agentId={agentId} />}
+        {tab === 'meta' && <MetaCapiPanel agentId={agentId} />}
         {tab === 'grup' && <GroupGuardPanel agentId={agentId} />}
         {tab === 'broadcast' && <BroadcastPanel agentId={agentId} seed={seed?.kind === 'broadcast' ? seed : null} />}
         {tab === 'kalender' && <CalendarPanel agentId={agentId} />}
         {tab === 'auto-reply' && <AutoReplyPanel agentId={agentId} />}
+        {tab === 'learning' && <LearningPanel agentId={agentId} />}
         {tab === 'template' && <TemplatePanel agentId={agentId} />}
         {tab === 'follow-up' && <FollowUpPanel agentId={agentId} />}
         {tab === 'produk' && <ProductPanel agentId={agentId} />}
+        {tab === 'media' && <MediaAssetsPanel agentId={agentId} />}
         {tab === 'alur' && <FlowPanel agentId={agentId} />}
         {tab === 'api' && <ApiPanel agentId={agentId} onOpenDashboard={() => setTab('dashboard')} />}
         {tab === 'widget' && <WidgetPanel agentId={agentId} />}
+        {tab === 'akun-tim' && isSuperAdmin && <UsersPanel />}
         {tab === 'status' && <StatusPanel agentId={agentId} />}
         {tab === 'kontak' && (
           <ContactsPanel agentId={agentId}
@@ -2572,10 +2731,12 @@ export default function Dashboard() {
       </Dialog>
 
       <Dialog open={showGuardModal} onClose={() => setShowGuardModal(false)} maxWidth="sm" fullWidth>
-        <DialogTitle>⚠️ Lengkapi dulu sebelum aktifkan AI</DialogTitle>
+        <DialogTitle>{canAI ? '⚠️ Lengkapi dulu sebelum aktifkan AI' : '⚠️ Persona AI belum lengkap'}</DialogTitle>
         <DialogContent>
           <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-            Agar AI tidak blunder saat membalas pelanggan, pastikan 2 hal ini:
+            {canAI
+              ? 'Agar AI tidak blunder saat membalas pelanggan, pastikan 2 hal ini:'
+              : 'Balasan AI belum bisa dinyalakan karena 2 hal ini belum lengkap. Pengisiannya ada di menu Asisten AI — minta super admin yang melengkapi.'}
           </Typography>
           <Stack spacing={1.5}>
             {['System Prompt / Persona', 'Tone / gaya bahasa'].map((item) => {
@@ -2587,7 +2748,9 @@ export default function Dashboard() {
                     <Typography variant="body2" sx={{ fontWeight: 600 }}>{item}</Typography>
                     <Typography variant="caption" color="text.secondary">{isMissing ? 'Belum diisi' : 'Sudah lengkap'}</Typography>
                   </Box>
-                  {isMissing && item.includes('Persona') && (
+                  {/* Tombol pengisian hanya untuk pemilik fitur "ai" — yang lain akan
+                      terpental balik ke Dashboard / kena 403 di setup wizard. */}
+                  {isMissing && item.includes('Persona') && canAI && (
                     <Button size="small" variant="outlined" onClick={() => { setShowGuardModal(false); openAgentAI('persona'); }}>Isi</Button>
                   )}
                 </Paper>
@@ -2596,8 +2759,10 @@ export default function Dashboard() {
           </Stack>
         </DialogContent>
         <DialogActions>
-          <Button variant="contained" color="success" startIcon={<AutoAwesomeIcon />} onClick={() => { setShowGuardModal(false); setWizardOpen(true); }}>Setup Cepat</Button>
-          <Button onClick={() => setShowGuardModal(false)}>Nanti saja</Button>
+          {canAI && (
+            <Button variant="contained" color="success" startIcon={<AutoAwesomeIcon />} onClick={() => { setShowGuardModal(false); setWizardOpen(true); }}>Setup Cepat</Button>
+          )}
+          <Button onClick={() => setShowGuardModal(false)}>{canAI ? 'Nanti saja' : 'Tutup'}</Button>
         </DialogActions>
       </Dialog>
 
@@ -2648,23 +2813,29 @@ export default function Dashboard() {
                   </Typography>
                 </Box>
                 {a.id === agentId && <Chip label="aktif" size="small" color="primary" variant="outlined" sx={{ height: 20, fontSize: '0.68rem' }} />}
-                <Tooltip title={agents.length <= 1 ? 'Minimal harus ada 1 CS' : 'Hapus CS'}>
-                  <span>
-                    <IconButton size="small" color="error" disabled={agents.length <= 1 || deleteAgentMut.isPending}
-                      onClick={() => deleteAgentById(a.id, a.name)}>
-                      <DeleteIcon fontSize="small" />
-                    </IconButton>
-                  </span>
-                </Tooltip>
+                {/* Hapus CS hanya untuk user yang punya fitur akun */}
+                {canAkun && (
+                  <Tooltip title={agents.length <= 1 ? 'Minimal harus ada 1 CS' : 'Hapus CS'}>
+                    <span>
+                      <IconButton size="small" color="error" disabled={agents.length <= 1 || deleteAgentMut.isPending}
+                        onClick={() => deleteAgentById(a.id, a.name)}>
+                        <DeleteIcon fontSize="small" />
+                      </IconButton>
+                    </span>
+                  </Tooltip>
+                )}
               </Paper>
             ))}
           </Stack>
         </DialogContent>
         <DialogActions>
           <Button onClick={() => setManageOpen(false)}>Tutup</Button>
-          <Button variant="contained" startIcon={<AddIcon />} onClick={openAddAgent} disabled={createAgentMut.isPending}>
-            Tambah CS
-          </Button>
+          {/* Tambah CS hanya untuk user yang punya fitur akun */}
+          {canAkun && (
+            <Button variant="contained" startIcon={<AddIcon />} onClick={openAddAgent} disabled={createAgentMut.isPending}>
+              Tambah CS
+            </Button>
+          )}
         </DialogActions>
       </Dialog>
 

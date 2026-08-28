@@ -6,6 +6,7 @@ import (
 	"mime"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -204,6 +205,13 @@ func OnWAOwnMessage(agentID uint, recipient types.JID, in services.IncomingMessa
 }
 
 func pauseAIForManualReply(agentID uint, sender string) time.Time {
+	// Jangan timpa jeda yang masih aktif (mis. jeda permanen dari tombol
+	// "Jeda AI" di inbox) — CS yang sedang menangani chat tetap pegang kendali.
+	var contact models.Contact
+	if database.DB.Select("manual_pause_until").Where("agent_id = ? AND number = ?", agentID, sender).First(&contact).Error == nil &&
+		contact.ManualPauseUntil != nil && contact.ManualPauseUntil.After(time.Now()) {
+		return *contact.ManualPauseUntil
+	}
 	until := time.Now().Add(manualAIPauseDuration)
 	_ = database.DB.Model(&models.Contact{}).
 		Where("agent_id = ? AND number = ?", agentID, sender).
@@ -870,8 +878,12 @@ func applyEscalationPolicy(agentID uint, enhancedPrompt, tone, userMsg string, h
 
 func shouldAllowHumanHandoff(message string) bool {
 	lower := strings.ToLower(message)
-	human := containsAnyText(lower, "cs", "admin", "petugas", "operator", "manusia", "customer service", "live agent", "orang")
+	human := containsAnyText(lower, "cs", "admin", "petugas", "operator", "manusia", "customer service", "live agent", "orang", "bantuan")
+	// Kata kerja eksplisit ("hubungkan ke cs") boleh berjarak dari kata orangnya.
+	// Kata kerja niat umum ("mau", "perlu") TIDAK boleh — "saya mau tanya jam admin"
+	// itu pertanyaan biasa, bukan minta CS. Karena itu harus langsung berdampingan.
 	request := containsAnyText(lower, "hubungkan", "sambungkan", "teruskan", "bicara", "ngobrol", "ngomong", "hubungi", "panggil", "alihkan") ||
+		weakIntentNextToHuman(lower) ||
 		strings.Contains(lower, "minta cs") || strings.Contains(lower, "minta admin") ||
 		strings.Contains(lower, "minta petugas") || strings.Contains(lower, "minta customer service") ||
 		strings.Contains(lower, "ke customer service") || strings.Contains(lower, "sama orang")
@@ -880,7 +892,17 @@ func shouldAllowHumanHandoff(message string) bool {
 	}
 	return containsAnyText(lower,
 		"refund", "pengembalian dana", "salah transfer", "bukti pembayaran",
-		"penipuan", "komplain", "keluhan serius", "data pribadi bocor", "akun diblokir")
+		"penipuan", "komplain", "keluhan serius", "data pribadi bocor",
+		"akun diblokir", "diblokir", "di blokir", "ke blokir", "banned", "akun dibekukan")
+}
+
+// weakIntentNextToHuman cocok untuk "butuh/mau/ingin/perlu" yang LANGSUNG diikuti
+// sebutan orang ("butuh cs", "mau bicara sama admin"). Mencegah false-positive pada
+// kalimat seperti "saya mau tanya jam admin" yang cuma bertanya.
+var weakIntentRe = regexp.MustCompile(`\b(butuh|mau|ingin|perlu)\s+(bantuan|cs|admin|petugas|operator|manusia|customer service|live agent|orang)\b`)
+
+func weakIntentNextToHuman(lower string) bool {
+	return weakIntentRe.MatchString(lower)
 }
 
 func containsAnyText(value string, needles ...string) bool {
@@ -1513,6 +1535,24 @@ func UpdateAgent(c *gin.Context) {
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(400, gin.H{"error": "Format data tidak valid"})
 		return
+	}
+	// Penyaringan field sensitif (lihat catatan di main.go): route ini sengaja tetap
+	// terbuka untuk semua role karena dipakai saklar "Balasan AI" & "Tandai dibaca
+	// otomatis" di tab Dashboard. Jadi field milik tab yang terkunci dibuang di sini,
+	// bukan di level route.
+	//   - persona/tone     -> hanya untuk pemilik fitur "ai" (tab Asisten AI)
+	//   - nama CS & jadwal -> hanya untuk pemilik fitur "akun" (tab Pengaturan)
+	// Field dibuang diam-diam (bukan 403) karena tab Asisten AI dan tab Pengaturan
+	// mengirim satu payload yang sama: user yang cuma punya salah satu fitur tetap
+	// harus bisa menyimpan bagian yang jadi haknya.
+	if !hasFeature(c, models.FeatureAI) {
+		req.SystemPrompt, req.Tone = nil, ""
+	}
+	if !hasFeature(c, models.FeatureAkun) {
+		req.Name = ""
+		req.GreetingEnabled, req.GreetingMessage = nil, nil
+		req.BusinessHoursEnabled, req.BusinessStart, req.BusinessEnd = nil, nil, nil
+		req.AwayMessage = nil
 	}
 	if req.Name != "" {
 		a.Name = req.Name

@@ -245,6 +245,8 @@ export interface BroadcastRecipient {
   agent_id?: number;
   status: string; // pending, sent, failed, skipped
   error: string;
+  /** Teks final yang dikirim ke penerima ini (spin sudah dipilih, {nama} sudah terisi). Kosong bila belum pernah dicoba kirim. */
+  sent_message?: string;
   sent_at: string | null;
 }
 
@@ -528,9 +530,79 @@ export interface User {
   name: string;
   username: string;
   email: string;
+  phone?: string;
   role: string;
   is_super_admin: boolean;
   tenant_id: number | null;
+  active?: boolean;    // false = akun dinonaktifkan, tidak bisa login
+  features?: string[]; // fitur ekstra yang di-grant super admin
+  blast_delay?: BlastDelay; // default jeda blast milik akun ini
+}
+
+// BlastDelay = default ritme kirim blast, disimpan PER AKUN (bukan per nomor CS):
+// satu CS bisa memegang beberapa nomor dan ritmenya mengikuti orangnya.
+export interface BlastDelay {
+  min_delay: number;
+  max_delay: number;
+  rest_every: number;    // 0 = istirahat berkala dimatikan
+  rest_duration: number;
+}
+
+// Nilai bawaan, harus sama dengan konstanta DefaultBlast* di backend/models.
+export const BLAST_DELAY_DEFAULT: BlastDelay = {
+  min_delay: 10,
+  max_delay: 30,
+  rest_every: 25,
+  rest_duration: 90,
+};
+
+// Cache lokal jeda blast supaya nilai awal form sudah benar pada render pertama —
+// tanpa ini form sempat menampilkan angka bawaan dulu sebelum /me selesai dimuat.
+const BLAST_DELAY_KEY = 'wai_blast_delay';
+
+export function readBlastDelayCache(): BlastDelay {
+  try {
+    const raw = localStorage.getItem(BLAST_DELAY_KEY);
+    if (!raw) return BLAST_DELAY_DEFAULT;
+    const v = JSON.parse(raw) as Partial<BlastDelay>;
+    return {
+      min_delay: Number(v.min_delay) || BLAST_DELAY_DEFAULT.min_delay,
+      max_delay: Number(v.max_delay) || BLAST_DELAY_DEFAULT.max_delay,
+      // rest_every boleh 0 (istirahat dimatikan), jadi tidak boleh pakai `|| default`.
+      rest_every: Number.isFinite(Number(v.rest_every)) ? Number(v.rest_every) : BLAST_DELAY_DEFAULT.rest_every,
+      rest_duration: Number(v.rest_duration) || BLAST_DELAY_DEFAULT.rest_duration,
+    };
+  } catch {
+    return BLAST_DELAY_DEFAULT; // mode privat / storage diblokir
+  }
+}
+
+export function writeBlastDelayCache(d: BlastDelay) {
+  try {
+    localStorage.setItem(BLAST_DELAY_KEY, JSON.stringify(d));
+  } catch {
+    // storage penuh/diblokir: form tetap jalan, cuma nilai awalnya kembali ke bawaan.
+  }
+}
+
+// Nama fitur ekstra, harus sama persis dengan konstanta di backend (models.FeatureAI/FeatureAkun).
+export const FEATURE_AI = 'ai';
+export const FEATURE_AKUN = 'akun';
+
+// Label role untuk ditampilkan di UI.
+// Super admin lama di DB masih memakai role "admin", jadi ikut dipetakan ke "Super Admin".
+export const ROLE_LABEL: Record<string, string> = {
+  superadmin: 'Super Admin',
+  admin: 'Super Admin',
+  manager: 'Manager',
+  cs: 'CS',
+};
+
+// hasFeature mengecek apakah user boleh memakai satu fitur. Super admin selalu boleh.
+export function hasFeature(u: User | null, f: string): boolean {
+  if (!u) return false;
+  if (u.is_super_admin) return true;
+  return (u.features || []).includes(f);
 }
 
 export function currentUser(): User | null {
@@ -661,4 +733,116 @@ export interface ScheduledStatus {
   status: string;
   error?: string;
   created_at: string;
+}
+
+// --- Learning Engine types ---
+
+export interface LearningRun {
+  id: number;
+  agent_id: number;
+  status: string; // pending, running, completed, failed
+  source_start_date?: string;
+  source_end_date?: string;
+  total_chats: number;
+  human_chats: number;
+  pattern_count: number;
+  style_profile?: string; // JSON
+  summary?: string;       // rekap apa yg dipelajari & diterapkan
+  error?: string;
+  created_at: string;
+  completed_at?: string;
+}
+
+export interface LearningPattern {
+  id: number;
+  learning_run_id: number;
+  agent_id: number;
+  label_id?: string;   // label WhatsApp konteks pola ("" = umum)
+  label_name?: string; // nama label (untuk tampilan)
+  pattern_type: string; // greeting, closing, objection_handling, upsell, tone, emoji_style, phrase, follow_up, label_handling, closing_path
+  trigger_context: string;
+  response_template: string;
+  emoji_signature: string;
+  confidence: number;
+  usage_count: number;
+  closing_impact: number;
+  status: string; // suggested, applied, rejected
+  applied_at?: string;
+  knowledge_id?: number;
+  created_at: string;
+}
+
+export interface LearningSnapshot {
+  id: number;
+  agent_id: number;
+  learning_run_id?: number;
+  snapshot_type: string;
+  label: string;
+  persona_at: string;
+  knowledge_count: number;
+  created_at: string;
+}
+
+export interface LearningConfig {
+  id: number;
+  agent_id: number;
+  enabled: boolean;
+  auto_apply: boolean;
+  min_confidence: number;
+  min_usage_count: number;
+  max_patterns_per_run: number;
+  preserve_manual_knowledge: boolean;
+  schedule_enabled: boolean;
+  schedule_cron: string;
+  lookback_days: number;
+  updated_at: string;
+}
+
+export interface LearningStatus {
+  last_run?: LearningRun;
+  patterns_suggested: number;
+  patterns_applied: number;
+  patterns_rejected: number;
+  snapshot_count: number;
+  config: LearningConfig;
+}
+
+export interface LearningRunDetail {
+  run: LearningRun;
+  patterns: LearningPattern[];
+}
+
+export interface StyleProfile {
+  greeting_patterns: string[];
+  closing_patterns: string[];
+  common_phrases: string[];
+  emoji_usage: string[];
+  tone_description: string;
+  pacing_style: string;
+  objection_handling: string[];
+  upsell_techniques: string[];
+  follow_up_style: string[];
+}
+
+export interface LearningEnqueued {
+  run_id: number;
+  status: string; // pending
+  message: string;
+}
+// Media assets: file media yang dikirim AI via directive [[SEND_MEDIA:label]].
+export interface MediaAsset {
+  id: number;
+  agent_id: number;
+  name: string;
+  file_name: string;
+  media_type: string; // image, video, document
+  mime_type: string;
+  caption: string;
+  file_size: number;
+  label: string;
+  trigger_keys: string;
+  sort_order: number;
+  is_active: boolean;
+  created_at: string;
+  updated_at: string;
 }
