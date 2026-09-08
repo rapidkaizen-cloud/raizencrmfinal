@@ -2,7 +2,8 @@ import { useEffect, useState } from 'react';
 import { Box, TextField, Button, Typography, Alert, CircularProgress, Link } from '@mui/material';
 import { useNavigate } from 'react-router-dom';
 import api from '../services/api';
-import logo from '../assets/logo-slaludiskon-login.png';
+import { unlockInboxSound } from '../services/inboxSound';
+import logo from '../assets/logo-crm-dashboard-login.png';
 
 // Ikut mengembalikan body respons: backend membedakan 403 "email belum diverifikasi"
 // (ada verification_required) dari 403 "akun dinonaktifkan", dan pesannya harus
@@ -239,6 +240,7 @@ export default function Login() {
       const res = await api.post('/login', { username: cleanUsername, password, turnstile: turnstileToken });
       localStorage.setItem('token', res.data.token);
       localStorage.setItem('user', JSON.stringify(res.data.user));
+      unlockInboxSound(); // izinkan bunyi notifikasi inbox (butuh gesture user)
       navigate('/app');
     } catch (e) {
       const response = responseStatus(e);
@@ -291,7 +293,7 @@ export default function Login() {
           <Box sx={{ textAlign: 'center', mb: 0.5 }}>
             <img
               src={logo}
-              alt="SlaluDiskon"
+              alt="CRM"
                             style={{
                 width: '42%',
                 maxWidth: 180,

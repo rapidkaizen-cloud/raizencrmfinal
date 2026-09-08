@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -145,13 +146,17 @@ func FireMetaConversion(agentID uint, sender, labelID string) {
 		if existing.ID > 0 {
 			return // sudah pernah dikirim
 		}
+		customData := map[string]any{"currency": "IDR"}
+		if v := metaPurchaseValue(agentID, sender); v > 0 {
+			customData["value"] = v
+		}
 		payload := map[string]any{
 			"event_name": eventName,
 			"event_time": time.Now().Unix(),
 			"user_data": map[string]string{
 				"ph": hashUserData(sender),
 			},
-			"custom_data": map[string]any{"currency": "IDR"},
+			"custom_data": customData,
 		}
 		if testCode != "" {
 			payload["test_event_code"] = testCode
@@ -240,4 +245,44 @@ func MetaConversions(agentID uint, limit int) []models.MetaConversion {
 	var out []models.MetaConversion
 	database.DB.Where("agent_id = ?", agentID).Order("id desc").Limit(limit).Find(&out)
 	return out
+}
+
+// metaPurchaseValue mencari nilai transaksi terbaru pelanggan untuk event
+// value-based. Prioritas: ClosingRecord (order terdeteksi AI), lalu
+// ProductOrder (checkout).
+func metaPurchaseValue(agentID uint, sender string) float64 {
+	var rec models.ClosingRecord
+	if database.DB.Where("agent_id = ? AND sender = ?", agentID, sender).
+		Order("created_at desc").First(&rec).Error == nil {
+		if v := extractAmountFromJSON(rec.DataJSON); v > 0 {
+			return v
+		}
+	}
+	var order models.ProductOrder
+	if database.DB.Where("agent_id = ? AND sender = ?", agentID, sender).
+		Order("created_at desc").First(&order).Error == nil {
+		if v := extractAmountFromJSON(order.DataJSON); v > 0 {
+			return v
+		}
+	}
+	return 0
+}
+
+// extractAmountFromJSON memindai nilai uang dari JSON (kunci umum level atas).
+func extractAmountFromJSON(raw string) float64 {
+	if strings.TrimSpace(raw) == "" {
+		return 0
+	}
+	var m map[string]any
+	if err := json.Unmarshal([]byte(raw), &m); err != nil {
+		return 0
+	}
+	for _, key := range []string{"total", "grand_total", "harga", "amount", "nilai", "price", "subtotal"} {
+		if v, ok := m[key]; ok {
+			if f, err := strconv.ParseFloat(strings.TrimSpace(fmt.Sprintf("%v", v)), 64); err == nil && f > 0 {
+				return f
+			}
+		}
+	}
+	return 0
 }

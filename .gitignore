@@ -32,3 +32,5 @@ Thumbs.db
 /raizencrm.bak-*
 /raizencrm.gagal-*
 frontend/dist.old/
+*.db
+*.db.bak-*
