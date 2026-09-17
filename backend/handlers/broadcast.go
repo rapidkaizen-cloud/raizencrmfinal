@@ -116,7 +116,8 @@ func CreateBroadcast(c *gin.Context) {
 		c.JSON(400, gin.H{"error": productButtonsErr.Error()})
 		return
 	}
-	if strings.TrimSpace(message) == "" {
+	// Mode multi nomor: pesan global boleh kosong asal tiap nomor punya pesan khusus (dicek setelah pool dibaca).
+	if strings.TrimSpace(message) == "" && strings.TrimSpace(c.PostForm("assign_mode")) != assignModeHistory {
 		c.JSON(400, gin.H{"error": "Pesan wajib diisi"})
 		return
 	}
@@ -125,19 +126,48 @@ func CreateBroadcast(c *gin.Context) {
 		return
 	}
 	var reqRecipients []broadcastGuardRecipient
-	if err := json.Unmarshal([]byte(c.PostForm("recipients")), &reqRecipients); err != nil || len(reqRecipients) == 0 {
+	if raw := strings.TrimSpace(c.PostForm("recipients")); raw != "" {
+		if err := json.Unmarshal([]byte(raw), &reqRecipients); err != nil {
+			c.JSON(400, gin.H{"error": "Daftar penerima tidak valid"})
+			return
+		}
+	}
+	// Blast Multiple Number: penerima juga bisa diambil dari tabel kontak (contact_ids / contact_all).
+	// Dimuat setelah pool dibaca karena kontak milik nomor di luar pool harus dilewati.
+	var contactIDs []uint
+	if raw := strings.TrimSpace(c.PostForm("contact_ids")); raw != "" {
+		if err := json.Unmarshal([]byte(raw), &contactIDs); err != nil {
+			c.JSON(400, gin.H{"error": "Daftar kontak tidak valid"})
+			return
+		}
+	}
+	useContacts := len(contactIDs) > 0 || c.PostForm("contact_all") == "1"
+	if len(reqRecipients) == 0 && !useContacts {
 		c.JSON(400, gin.H{"error": "Penerima wajib diisi"})
 		return
 	}
-	if !services.WA(id).IsConnected() {
+	// Blast Multiple Number boleh menyertakan nomor yang belum tersambung: nomor itu ikut
+	// mengirim begitu tersambung, kontak yang terkunci padanya menunggu. Cukup satu nomor online.
+	assignMode := strings.TrimSpace(c.PostForm("assign_mode"))
+	if assignMode != "" && assignMode != assignModeHistory {
+		c.JSON(400, gin.H{"error": "Mode pembagian nomor tidak dikenal"})
+		return
+	}
+	multi := assignMode == assignModeHistory
+	if !multi && !services.WA(id).IsConnected() {
 		c.JSON(400, gin.H{"error": "WhatsApp belum tersambung"})
 		return
 	}
 
 	// Rotasi nomor dari form web. Nomor utama selalu menjadi anggota pertama;
-	// nomor tambahan wajib milik tenant yang sama dan sedang tersambung.
-	pool := []uint{id}
-	seenAgents := map[uint]bool{id: true}
+	// nomor tambahan wajib milik tenant yang sama (dan tersambung, kecuali mode multi).
+	// Mode multi: nomor aktif di dashboard hanya pemilik kampanye (master), bukan pengirim —
+	// pool berisi nomor yang dipilih saja.
+	pool := []uint{}
+	seenAgents := map[uint]bool{}
+	if !multi {
+		pool, seenAgents = []uint{id}, map[uint]bool{id: true}
+	}
 	if rawAgentIDs := strings.TrimSpace(c.PostForm("agent_ids")); rawAgentIDs != "" {
 		var requestedAgentIDs []uint
 		if err := json.Unmarshal([]byte(rawAgentIDs), &requestedAgentIDs); err != nil {
@@ -154,13 +184,48 @@ func CreateBroadcast(c *gin.Context) {
 				c.JSON(400, gin.H{"error": "Ada nomor rotasi yang tidak dikenal"})
 				return
 			}
-			if !services.WA(aid).IsConnected() {
+			if !multi && !services.WA(aid).IsConnected() {
 				c.JSON(409, gin.H{"error": "Semua nomor rotasi harus tersambung sebelum Blast dimulai"})
 				return
 			}
 			seenAgents[aid] = true
 			pool = append(pool, aid)
 		}
+	}
+	if len(pool) == 0 {
+		c.JSON(400, gin.H{"error": "Pilih minimal satu nomor pengirim"})
+		return
+	}
+	if len(pool) > maxMultiBlastNumbers {
+		c.JSON(400, gin.H{"error": fmt.Sprintf("Maksimal %d nomor per Blast", maxMultiBlastNumbers)})
+		return
+	}
+	if multi && !anyAgentConnected(pool) {
+		c.JSON(409, gin.H{"error": "Minimal satu nomor pengirim harus tersambung"})
+		return
+	}
+	skippedOtherAgent := 0
+	if multi {
+		// Nomor ketikan manual yang ternyata sudah ada di data kontak ikut penanggung jawabnya.
+		reqRecipients, skippedOtherAgent = applyContactOwnership(tid, reqRecipients, pool)
+	}
+	if useContacts && multi {
+		fromTable, skippedFromTable := multiBlastRecipients(tid, contactIDs, pool)
+		skippedOtherAgent += skippedFromTable
+		reqRecipients = append(reqRecipients, fromTable...) // penerima khusus (agent_id dari form) tetap menang saat duplikat
+	}
+	if len(reqRecipients) == 0 {
+		c.JSON(400, gin.H{"error": "Tidak ada penerima yang bisa dikirim oleh nomor-nomor terpilih"})
+		return
+	}
+	agentSettingsJSON, err := parseAgentSettings(c.PostForm("agent_settings"), pool)
+	if err != nil {
+		c.JSON(400, gin.H{"error": "Setelan per nomor tidak valid"})
+		return
+	}
+	if !allAgentsHaveMessage(pool, agentSettingsJSON, message) {
+		c.JSON(400, gin.H{"error": "Pesan wajib diisi (global atau khusus untuk setiap nomor)"})
+		return
 	}
 	var paused int64
 	database.DB.Model(&models.Broadcast{}).
@@ -203,13 +268,15 @@ func CreateBroadcast(c *gin.Context) {
 	b.MaxDelay = maxD
 	b.RestEvery = restEvery
 	b.RestDuration = restDuration
+	b.AssignMode = assignMode
+	b.AgentSettingsJSON = agentSettingsJSON
 	if productMediaPath != "" {
 		b.MediaType = productMediaType
 		b.MediaPath = productMediaPath
 		b.FileName = productFileName
 		b.Mimetype = productMimetype
 	}
-	if len(pool) > 1 {
+	if len(pool) > 1 || multi {
 		poolJSON, err := json.Marshal(pool)
 		if err != nil {
 			c.JSON(500, gin.H{"error": "Gagal menyiapkan rotasi nomor"})
@@ -261,11 +328,20 @@ func CreateBroadcast(c *gin.Context) {
 		}
 	}
 
-	recipients := make([]models.BroadcastRecipient, 0, len(guardRecipients))
-	for _, r := range guardRecipients {
-		recipients = append(recipients, models.BroadcastRecipient{
-			Number: r.Number, Name: r.Name, AgentID: stickyAgent(r.Number, pool), Status: "pending",
-		})
+	var recipients []models.BroadcastRecipient
+	if assignMode == assignModeHistory {
+		numbers := make([]string, 0, len(guardRecipients))
+		for _, r := range guardRecipients {
+			numbers = append(numbers, r.Number)
+		}
+		recipients = assignByHistory(guardRecipients, pool, historyOwners(numbers, pool))
+	} else {
+		recipients = make([]models.BroadcastRecipient, 0, len(guardRecipients))
+		for _, r := range guardRecipients {
+			recipients = append(recipients, models.BroadcastRecipient{
+				Number: r.Number, Name: r.Name, AgentID: stickyAgent(r.Number, pool), Status: "pending", VarsJSON: encodeVars(r.Vars),
+			})
+		}
 	}
 
 	if err := database.DB.Transaction(func(tx *gorm.DB) error {
@@ -283,7 +359,7 @@ func CreateBroadcast(c *gin.Context) {
 	}
 
 	startBroadcastWorker(b.ID, id, minD, maxD)
-	c.JSON(200, gin.H{"data": b})
+	c.JSON(200, gin.H{"data": b, "skipped_other_agent": skippedOtherAgent})
 }
 
 // TestBroadcastRotation memverifikasi pool dan mensimulasikan failover dengan algoritma
@@ -423,13 +499,14 @@ func ResumeBroadcast(c *gin.Context) {
 		c.JSON(400, gin.H{"error": "ID broadcast tidak valid"})
 		return
 	}
-	if !services.WA(id).IsConnected() {
-		c.JSON(409, gin.H{"error": "WhatsApp belum tersambung"})
-		return
-	}
 	var b models.Broadcast
 	if database.DB.Where("id = ? AND agent_id = ?", bid, id).First(&b).Error != nil {
 		c.JSON(404, gin.H{"error": "Broadcast tidak ditemukan"})
+		return
+	}
+	// Rotasi/multi nomor: cukup salah satu nomor pool yang tersambung.
+	if !anyAgentConnected(parseAgentPool(b)) {
+		c.JSON(409, gin.H{"error": "WhatsApp belum tersambung"})
 		return
 	}
 	if b.Status != models.BroadcastWARestricted {
@@ -533,12 +610,18 @@ func ResumeBroadcasts() {
 // resumeBroadcast menunggu WA agent tersambung (maks ~90 detik) lalu melanjutkan pengiriman.
 func resumeBroadcast(broadcastID, agentID uint) {
 	defer services.RecoverGo("resumeBroadcast")
+	// Rotasi/multi nomor: cukup salah satu nomor pool yang tersambung.
+	pool := []uint{agentID}
+	var b models.Broadcast
+	if database.DB.First(&b, broadcastID).Error == nil {
+		pool = parseAgentPool(b)
+	}
 	for i := 0; i < 18; i++ {
 		if isBroadcastCancelRequested(broadcastID) {
 			finalizeCancelledBroadcast(broadcastID)
 			return
 		}
-		if services.WA(agentID).IsConnected() {
+		if anyAgentConnected(pool) {
 			minD, maxD := resumeBroadcastDelay(broadcastID)
 			log.Printf("Melanjutkan broadcast %d (agent %d), jeda %d-%d dtk", broadcastID, agentID, minD, maxD)
 			runBroadcast(broadcastID, agentID, minD, maxD)
@@ -577,9 +660,12 @@ func runBroadcast(broadcastID, agentID uint, minD, maxD int) {
 		return
 	}
 	pool := parseAgentPool(b)
+	// Mode multi selalu lewat jalur rotasi walau pool satu nomor: pemilik kampanye (agentID)
+	// belum tentu anggota pool, jadi jalur satu-nomor yang mengirim lewat agentID tidak boleh dipakai.
+	rotation := len(pool) > 1 || b.AssignMode == assignModeHistory
 	// Jalur satu nomor dikunci sebelum status diklaim agar broadcast lain pada nomor
 	// yang sama tetap berstatus antre, bukan terlihat berjalan saat sebenarnya menunggu.
-	if len(pool) == 1 {
+	if !rotation {
 		agentLock := broadcastAgentLock(agentID)
 		agentLock.Lock()
 		defer agentLock.Unlock()
@@ -600,8 +686,8 @@ func runBroadcast(broadcastID, agentID uint, minD, maxD int) {
 	_ = database.DB.Model(&models.ScheduledMessage{}).Where("broadcast_id = ?", broadcastID).
 		Update("status", models.BroadcastRunning).Error
 
-	// Rotasi nomor: broadcast dengan pool multi-agent (AgentIDs tidak kosong).
-	if len(pool) > 1 {
+	// Rotasi nomor: broadcast dengan pool multi-agent (AgentIDs tidak kosong) atau mode multi.
+	if rotation {
 		assignRecipientsToPool(broadcastID, pool)
 		runBroadcastRotation(broadcastID, b, minD, maxD, pool)
 		return
@@ -685,7 +771,7 @@ func runBroadcast(broadcastID, agentID uint, minD, maxD int) {
 		}
 		// Hormati kuota broadcast — tidak berlaku untuk internal company.
 
-		msg := personalize(spinText(b.Message), r.Name)
+		msg := renderBroadcastMessage(b.Message, r)
 		if isBroadcastCancelRequested(broadcastID) {
 			finalizeCancelledBroadcast(broadcastID)
 			log.Printf("Broadcast %d dibatalkan user sebelum pengiriman ke %s", broadcastID, r.Number)

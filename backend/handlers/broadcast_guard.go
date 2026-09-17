@@ -11,8 +11,10 @@ import (
 )
 
 type broadcastGuardRecipient struct {
-	Number string `json:"number"`
-	Name   string `json:"name"`
+	Number  string            `json:"number"`
+	Name    string            `json:"name"`
+	Vars    map[string]string `json:"vars,omitempty"`     // variabel per penerima dari file impor (Blast Multiple Number)
+	AgentID uint              `json:"agent_id,omitempty"` // penerima khusus satu nomor (Blast Multiple Number); 0 = bebas
 }
 
 // BroadcastConsentSummary mengembalikan ringkasan catatan lokal untuk tampilan Kontak.
@@ -55,7 +57,7 @@ func normalizeGuardRecipients(in []broadcastGuardRecipient) []broadcastGuardReci
 			continue
 		}
 		seen[number] = true
-		out = append(out, broadcastGuardRecipient{Number: number, Name: strings.TrimSpace(r.Name)})
+		out = append(out, broadcastGuardRecipient{Number: number, Name: strings.TrimSpace(r.Name), Vars: r.Vars, AgentID: r.AgentID})
 	}
 	return out
 }

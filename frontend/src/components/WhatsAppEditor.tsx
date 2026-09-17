@@ -12,6 +12,44 @@ const FORMATS = [
   { key: 'mono', icon: <CodeIcon fontSize="small" />, label: 'Monospace', wrapper: '```' },
 ];
 
+/** Tipe data drag untuk chip variabel pesan; nilainya teks yang disisipkan, mis. "{nama}". */
+export const VAR_DRAG_TYPE = 'application/x-wa-var';
+
+const MIRROR_STYLES = [
+  'fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'letterSpacing', 'lineHeight', 'textTransform', 'wordSpacing',
+  'textIndent', 'tabSize', 'boxSizing', 'paddingTop', 'paddingRight', 'paddingBottom', 'paddingLeft',
+  'borderTopWidth', 'borderRightWidth', 'borderBottomWidth', 'borderLeftWidth',
+] as const;
+
+// indexFromPoint = indeks karakter textarea di bawah titik layar (x, y).
+// Jalur utama: document.caretPositionFromPoint (mengenali textarea di Chrome 128+/Firefox).
+// Cadangan: div cermin transparan dengan tipografi & scroll yang sama, lalu caretRangeFromPoint.
+function indexFromPoint(el: HTMLTextAreaElement, x: number, y: number): number {
+  const doc = document as Document & {
+    caretPositionFromPoint?: (x: number, y: number) => { offsetNode: Node; offset: number } | null;
+    caretRangeFromPoint?: (x: number, y: number) => Range | null;
+  };
+  const pos = doc.caretPositionFromPoint?.(x, y);
+  if (pos && pos.offsetNode === el) return Math.min(pos.offset, el.value.length);
+  if (!doc.caretRangeFromPoint) return el.value.length;
+
+  const cs = getComputedStyle(el);
+  const rect = el.getBoundingClientRect();
+  const mirror = document.createElement('div');
+  for (const p of MIRROR_STYLES) mirror.style[p] = cs[p];
+  Object.assign(mirror.style, {
+    position: 'fixed', left: `${rect.left}px`, top: `${rect.top}px`, width: `${rect.width}px`, height: `${rect.height}px`,
+    overflow: 'hidden', whiteSpace: 'pre-wrap', overflowWrap: 'break-word', borderStyle: 'solid', borderColor: 'transparent',
+    opacity: '0', zIndex: '2147483647',
+  });
+  mirror.textContent = el.value + '​';
+  document.body.appendChild(mirror);
+  mirror.scrollTop = el.scrollTop;
+  const range = doc.caretRangeFromPoint(x, y);
+  mirror.remove();
+  return range && mirror.contains(range.startContainer) ? Math.min(range.startOffset, el.value.length) : el.value.length;
+}
+
 interface Props {
   value: string;
   onChange: (v: string) => void;
@@ -85,8 +123,41 @@ export default function WhatsAppEditor({ value, onChange, placeholder, rows = 4,
     return html;
   };
 
+  // Chip variabel yang diseret (VAR_DRAG_TYPE) ditangani sendiri, tidak lewat drop bawaan textarea
+  // (perilakunya beda antar browser dan sering menolak drop). Saat diseret di atas textarea, caret
+  // mengikuti kursor; saat dilepas, variabel disisipkan di posisi huruf itu. Di area editor lain
+  // (toolbar, tepi, pratinjau) variabel ditambahkan di akhir. Seret teks biasa tetap perilaku browser.
+  const isVarDrag = (e: React.DragEvent) => e.dataTransfer.types.includes(VAR_DRAG_TYPE);
+  const dropIndex = (e: React.DragEvent) => {
+    const el = textareaRef.current;
+    return el && e.target === el ? indexFromPoint(el, e.clientX, e.clientY) : value.length;
+  };
+
   return (
-    <Box>
+    <Box
+      onDragOver={e => {
+        if (!isVarDrag(e)) return;
+        e.preventDefault();
+        e.dataTransfer.dropEffect = 'copy';
+        const el = textareaRef.current;
+        if (el && e.target === el) {
+          const idx = dropIndex(e);
+          if (document.activeElement !== el) el.focus();
+          if (el.selectionStart !== idx || el.selectionEnd !== idx) el.setSelectionRange(idx, idx);
+        }
+      }}
+      onDrop={e => {
+        if (!isVarDrag(e)) return;
+        e.preventDefault();
+        const text = e.dataTransfer.getData(VAR_DRAG_TYPE);
+        if (!text) return;
+        const idx = dropIndex(e);
+        const el = textareaRef.current;
+        const next = value.slice(0, idx) + text + value.slice(idx);
+        if (el) { el.value = next; updateCursor(el, idx + text.length, idx + text.length); }
+        onChange(next);
+      }}
+    >
       <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 0.5 }}>
         <ToggleButtonGroup size="small" exclusive={false}>
           {FORMATS.map(f => (

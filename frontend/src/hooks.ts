@@ -2,7 +2,7 @@ import { useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import api from './services/api';
 import { writeBlastDelayCache } from './types';
-import type { Analytics, AIMetrics, Contact, ChatMsg, ConversationBrief, Broadcast, BroadcastDetailData, BroadcastSafetyForm, BroadcastConsentSummary, WAGroup, GroupGuardConfig, GroupModerationLog, LabelInfo, ScheduledMessage, AutoReply, Template, SavedContact, SavedContactsResp, LeadStage, FollowUp, Agent, KnowledgeItem, Handoff, CrawlJob, CrawlPage, KnowledgeUsage, ScheduledStatus, ApiSettings, Flow, Product, ProductOrder, AIForm, AIFormSubmission, MediaAsset, LearningStatus, LearningScore, LearningRun, LearningRunDetail, LearningPatternPage, LearningSnapshot, LearningConfig, MetaConfigData, LeadStageDef, LabelRule, PipelineData, User, BlastDelay, TeamUser, CSActivityLog, CreateTeamUserRequest, UpdateTeamUserRequest } from './types';
+import type { Analytics, AIMetrics, Contact, ChatMsg, ConversationBrief, Broadcast, BroadcastDetailData, BroadcastSafetyForm, BroadcastConsentSummary, WAGroup, GroupGuardConfig, GroupModerationLog, LabelInfo, ScheduledMessage, AutoReply, Template, SavedContact, SavedContactsResp, LeadStage, FollowUp, Agent, KnowledgeItem, Handoff, CrawlJob, CrawlPage, KnowledgeUsage, ScheduledStatus, ApiSettings, Flow, Product, ProductOrder, AIForm, AIFormSubmission, MediaAsset, LearningStatus, LearningScore, LearningRun, LearningRunDetail, LearningPatternPage, LearningSnapshot, LearningConfig, MetaConfigData, LeadStageDef, LabelRule, PipelineData, User, BlastDelay, TeamUser, CSActivityLog, CreateTeamUserRequest, UpdateTeamUserRequest, MultiBlastColumn, MultiBlastContactsResp } from './types';
 
 type ContactList = { number: string; name: string }[];
 
@@ -659,7 +659,18 @@ export function useBroadcastDetail(agentId: number, bid: number | null) {
 export function useCreateBroadcast(agentId: number) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: async (body: { message: string; recipients: { number: string; name: string }[]; min_delay: number; max_delay: number; rest_every: number; rest_duration: number; file: File | null; safety: BroadcastSafetyForm; agent_ids?: number[]; product_id?: number }) => {
+    mutationFn: async (body: {
+      message: string; recipients: { number: string; name: string; vars?: Record<string, string>; agent_id?: number }[];
+      min_delay: number; max_delay: number; rest_every: number; rest_duration: number; file: File | null; safety: BroadcastSafetyForm;
+      agent_ids?: number[]; product_id?: number;
+      /** 'history' = Blast Multiple Number: penerima menempel ke nomor yang pernah chat dengannya. */
+      assign_mode?: 'history';
+      /** Setelan per nomor yang menimpa setelan global (jeda + pesan khusus), key = agent id. */
+      agent_settings?: Record<number, BlastDelay & { message?: string }>;
+      /** Blast Multiple Number: penerima dari tabel kontak — id terpilih, atau semua. */
+      contact_ids?: number[];
+      contact_all?: boolean;
+    }) => {
       const fd = new FormData();
       fd.append('message', body.message);
       fd.append('recipients', JSON.stringify(body.recipients));
@@ -671,13 +682,65 @@ export function useCreateBroadcast(agentId: number) {
       if (body.file) fd.append('file', body.file);
       if (body.agent_ids && body.agent_ids.length) fd.append('agent_ids', JSON.stringify(body.agent_ids));
       if (body.product_id) fd.append('product_id', String(body.product_id));
-      return (await api.post(`/agents/${agentId}/broadcast`, fd)).data;
+      if (body.assign_mode) fd.append('assign_mode', body.assign_mode);
+      if (body.agent_settings && Object.keys(body.agent_settings).length) fd.append('agent_settings', JSON.stringify(body.agent_settings));
+      if (body.contact_ids?.length) fd.append('contact_ids', JSON.stringify(body.contact_ids));
+      if (body.contact_all) fd.append('contact_all', '1');
+      return (await api.post(`/agents/${agentId}/broadcast`, fd)).data as { data: Broadcast; skipped_other_agent?: number };
     },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['broadcasts', agentId] });
       qc.invalidateQueries({ queryKey: ['broadcast-consent-summary', agentId] });
+      qc.invalidateQueries({ queryKey: ['multi-blast-contacts'] });
     },
   });
+}
+
+// ---- Blast Multiple Number: tabel kontak per tenant ----
+
+export function useMultiBlastContacts(agentId: number, params: { page: number; q: string; agent_id: string; limit?: number }) {
+  return useQuery<MultiBlastContactsResp>({
+    queryKey: ['multi-blast-contacts', agentId, params],
+    queryFn: async () => (await api.get(`/agents/${agentId}/multi-blast/contacts`, { params })).data,
+    enabled: !!agentId,
+    placeholderData: prev => prev,
+    // Hitungan blast & pemegang kontak berubah selama Blast berjalan.
+    refetchInterval: 10_000,
+  });
+}
+
+/** Semua id kontak yang cocok dengan filter, tanpa paginasi — untuk "centang semua" lintas halaman. */
+export function useMultiBlastContactIds(agentId: number, params: { q: string; agent_id: string }) {
+  return useQuery<number[]>({
+    queryKey: ['multi-blast-contacts', agentId, 'ids', params],
+    queryFn: async () => (await api.get(`/agents/${agentId}/multi-blast/contacts`, { params: { ...params, ids_only: 1 } })).data.ids,
+    enabled: !!agentId,
+    placeholderData: prev => prev,
+  });
+}
+
+function useMultiBlastMutation<TBody, TResp>(agentId: number, path: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (body: TBody) => (await api.post(`/agents/${agentId}/multi-blast/contacts/${path}`, body)).data as TResp,
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ['multi-blast-contacts'] }); },
+  });
+}
+
+export function useImportMultiBlastContacts(agentId: number) {
+  return useMultiBlastMutation<
+    { columns: MultiBlastColumn[]; rows: { number: string; name: string; vars?: Record<string, string> }[] },
+    { inserted: number; skipped: number; columns: MultiBlastColumn[] }
+  >(agentId, 'import');
+}
+export function useAssignMultiBlastContacts(agentId: number) {
+  return useMultiBlastMutation<{ ids: number[]; agent_id: number }, { updated: number }>(agentId, 'assign');
+}
+export function useDistributeMultiBlastContacts(agentId: number) {
+  return useMultiBlastMutation<{ agent_ids: number[] }, { assigned: number; per_agent: Record<string, number> }>(agentId, 'distribute');
+}
+export function useDeleteMultiBlastContacts(agentId: number) {
+  return useMultiBlastMutation<{ ids: number[] }, { deleted: number }>(agentId, 'delete');
 }
 
 export interface BroadcastRotationTestResult {

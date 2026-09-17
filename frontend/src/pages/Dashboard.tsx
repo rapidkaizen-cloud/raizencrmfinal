@@ -47,6 +47,7 @@ import MarkChatReadIcon from '@mui/icons-material/MarkChatReadOutlined';
 import InboxPanel from '../components/InboxPanel';
 import TestChatPanel from '../components/TestChatPanel';
 import BroadcastPanel from '../components/BroadcastPanel';
+import BlastMultiPanel from '../components/BlastMultiPanel';
 import CalendarPanel from '../components/CalendarPanel';
 import AutoReplyPanel from '../components/AutoReplyPanel';
 import MediaAssetsPanel from '../components/MediaAssetsPanel';
@@ -244,6 +245,7 @@ const NAV_GROUPS: NavGroup[] = [
   ] },
   { section: 'Kampanye', items: [
     { id: 'broadcast', label: 'Blast', icon: <CampaignIcon fontSize="small" /> },
+    { id: 'blast-multi', label: 'Blast Multiple Number', icon: <CampaignIcon fontSize="small" /> },
     { id: 'meta-capi', label: 'Meta CAPI', icon: <CampaignIcon fontSize="small" /> },
     { id: 'kalender', label: 'Jadwal Blast', icon: <CalendarIcon fontSize="small" /> },
     { id: 'status', label: 'Status / Story', icon: <AutoStoriesIcon fontSize="small" /> },
@@ -2559,6 +2561,7 @@ export default function Dashboard() {
         {tab === 'coba-chat' && <TestChatPanel agentId={agentId} />}
         {tab === 'grup' && <GroupGuardPanel agentId={agentId} />}
         {tab === 'broadcast' && <BroadcastPanel agentId={agentId} seed={seed?.kind === 'broadcast' ? seed : null} />}
+        {tab === 'blast-multi' && <BlastMultiPanel agentId={agentId} />}
         {tab === 'kalender' && <CalendarPanel agentId={agentId} />}
         {tab === 'auto-reply' && <AutoReplyPanel agentId={agentId} />}
         {tab === 'learning' && <LearningPanel agentId={agentId} />}

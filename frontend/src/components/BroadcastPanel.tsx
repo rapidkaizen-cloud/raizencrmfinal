@@ -43,7 +43,7 @@ function normalizePhone(s: string): string {
 
 // spinPreview meniru parser spin backend: {a|b|c} dipilih acak (dukung bersarang),
 // {nama} dan kurung tanpa '|' dibiarkan. Untuk pratinjau contoh hasil di form.
-function spinPreview(input: string): string {
+export function spinPreview(input: string): string {
   let s = input.replaceAll('{nama}', '\u0000nama\u0001');
   for (let i = 0; i < 200; i++) {
     const open = s.lastIndexOf('{');
@@ -68,11 +68,11 @@ function productCaption(product: Product) {
   ].filter(Boolean).join('\n\n');
 }
 
-const STATUS_COLOR: Record<string, 'success' | 'warning' | 'error' | 'default'> = {
+export const STATUS_COLOR: Record<string, 'success' | 'warning' | 'error' | 'default'> = {
   done: 'success', running: 'warning', pending: 'default', failed: 'error', interrupted: 'error',
   resuming: 'warning', wa_restricted: 'warning', cancel_requested: 'warning', cancelled: 'default',
 };
-const STATUS_LABEL: Record<string, string> = {
+export const STATUS_LABEL: Record<string, string> = {
   done: 'Selesai', running: 'Berjalan', pending: 'Antre', failed: 'Gagal', interrupted: 'Terhenti',
   resuming: 'Mencoba lanjut', wa_restricted: 'Dijeda WhatsApp', cancel_requested: 'Membatalkan', cancelled: 'Dibatalkan',
 };

@@ -229,6 +229,8 @@ export interface Broadcast {
   paused_at?: string;
   agent_ids?: string;
   quarantine_json?: string;
+  /** 'history' = dibuat dari menu Blast Multiple Number. */
+  assign_mode?: string;
   total: number;
   sent: number;
   failed: number;
@@ -243,11 +245,42 @@ export interface Broadcast {
   created_at: string;
 }
 
+/** Kolom file impor Blast Multiple Number (key = nama placeholder, label = header asli). */
+export interface MultiBlastColumn { key: string; label: string }
+
+/** Satu kontak di tabel Blast Multiple Number (per tenant, upsert by nomor). */
+export interface MultiBlastContact {
+  id: number;
+  number: string;
+  name: string;
+  vars_json: string;
+  /** Nomor (agent) yang menangani kontak ini seterusnya; 0 = belum ditentukan. */
+  agent_id: number;
+  blast_count: number;
+  last_blast_at: string | null;
+  created_at: string;
+}
+
+export interface MultiBlastContactsResp {
+  data: MultiBlastContact[];
+  total: number;
+  page: number;
+  limit: number;
+  columns: MultiBlastColumn[];
+  per_agent: Record<string, number>;
+  unassigned: number;
+  all: number;
+}
+
 export interface BroadcastRecipient {
   id: number;
   number: string;
   name: string;
   agent_id?: number;
+  /** Terkunci ke agent_id (pernah chat dengannya); failover tidak memindahkannya. */
+  locked?: boolean;
+  /** Variabel per penerima dari file impor, JSON string. */
+  vars_json?: string;
   status: string; // pending, sent, failed, skipped
   error: string;
   /** Teks final yang dikirim ke penerima ini (spin sudah dipilih, {nama} sudah terisi). Kosong bila belum pernah dicoba kirim. */

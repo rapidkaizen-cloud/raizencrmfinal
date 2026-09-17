@@ -644,7 +644,8 @@ func reassignPendingToHealthy(broadcastID uint, healthy []uint) {
 	}
 	var toMove []move
 	for _, r := range recs {
-		if !healthySet[r.AgentID] {
+		// Penerima terkunci (Blast Multiple Number) tetap menunggu nomornya sendiri.
+		if !healthySet[r.AgentID] && !r.Locked {
 			toMove = append(toMove, move{id: r.ID, number: r.Number})
 		}
 	}
@@ -708,7 +709,9 @@ func runBroadcastAgentWorker(broadcastID, agentID uint, b models.Broadcast, minD
 		}
 	}
 
-	restEvery, restDuration := normalizeBroadcastRest(b.RestEvery, b.RestDuration)
+	// Setelan khusus nomor ini (Blast Multiple Number) menimpa jeda & pesan global.
+	minD, maxD, restEvery, restDuration := agentBlastSettings(b, agentID, minD, maxD)
+	template := agentBlastMessage(b, agentID)
 	sentSinceRest := 0
 	consecutiveSystemic := 0
 
@@ -748,7 +751,7 @@ func runBroadcastAgentWorker(broadcastID, agentID uint, b models.Broadcast, minD
 			}
 		}
 
-		msg := personalize(spinText(b.Message), r.Name)
+		msg := renderBroadcastMessage(template, r)
 		if isBroadcastCancelRequested(broadcastID) {
 			campaign.setCancelled()
 			return
@@ -836,6 +839,9 @@ func runBroadcastAgentWorker(broadcastID, agentID uint, b models.Broadcast, minD
 			database.DB.Model(&models.BroadcastRecipient{}).Where("id = ?", r.ID).
 				Updates(map[string]any{"status": "sent", "sent_at": &now, "error": "", "sent_message": msg})
 			bumpBroadcastCounter(broadcastID, "sent")
+			if b.AssignMode == assignModeHistory && !isGroupBroadcast {
+				recordMultiBlastSent(b.TenantID, r.Number, agentID)
+			}
 			sentSinceRest++
 			consecutiveSystemic = 0
 		}
@@ -937,6 +943,10 @@ func runBroadcastRotation(broadcastID uint, b models.Broadcast, minD, maxD int, 
 	}
 
 	const maxRounds = 64
+	// Batas menunggu nomor offline yang masih memegang penerima terkunci (15 dtk per cek ≈ 2 jam).
+	// ponytail: setelah itu broadcast jadi interrupted dan dilanjutkan saat server restart / resume.
+	const maxOfflineWaits = 480
+	offlineWaits := 0
 	for round := 0; round < maxRounds; round++ {
 		if campaign.isCancelled() || isBroadcastCancelRequested(broadcastID) {
 			finalizeCancelledBroadcast(broadcastID)
@@ -993,8 +1003,13 @@ func runBroadcastRotation(broadcastID uint, b models.Broadcast, minD, maxD int, 
 			})
 		}
 		if workers == 0 {
-			// Semua healthy tapi pending menempel di nomor lain yang offline/karantina —
-			// reassign harusnya sudah jalan; jika tetap 0 worker, hentikan loop.
+			// Sisa pending menempel di nomor yang offline/karantina. Penerima terkunci tidak
+			// boleh dialihkan — tunggu nomornya reconnect sebentar; selain itu hentikan loop.
+			if offlineWaits < maxOfflineWaits && lockedPendingOffline(broadcastID, campaign) && sleepBroadcastDelay(broadcastID, 15) {
+				offlineWaits++
+				round-- // menunggu bukan putaran kirim; jangan habiskan jatah maxRounds
+				continue
+			}
 			break
 		}
 		wg.Wait()

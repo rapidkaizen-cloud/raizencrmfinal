@@ -277,6 +277,12 @@ func main() {
 			auth.GET("/agents/:id/broadcasts/:bid", handlers.BroadcastDetail)
 			auth.POST("/agents/:id/broadcasts/:bid/cancel", handlers.CancelBroadcast)
 			auth.POST("/agents/:id/broadcasts/:bid/resume", handlers.ResumeBroadcast)
+			// Blast Multiple Number: data kontak per tenant (impor .xlsx, assign nomor).
+			auth.GET("/agents/:id/multi-blast/contacts", handlers.ListMultiBlastContacts)
+			auth.POST("/agents/:id/multi-blast/contacts/import", handlers.ImportMultiBlastContacts)
+			auth.POST("/agents/:id/multi-blast/contacts/assign", handlers.AssignMultiBlastContacts)
+			auth.POST("/agents/:id/multi-blast/contacts/distribute", handlers.DistributeMultiBlastContacts)
+			auth.POST("/agents/:id/multi-blast/contacts/delete", handlers.DeleteMultiBlastContacts)
 			auth.GET("/agents/:id/chat-contacts", handlers.ChatContacts)
 			auth.GET("/agents/:id/wa-contacts", handlers.WAContacts)
 			auth.POST("/agents/:id/check-numbers", handlers.CheckNumbersOnWA)

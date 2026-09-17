@@ -15,6 +15,30 @@ const (
 	BroadcastCancelled       = "cancelled"
 )
 
+// MultiBlastContact = data kontak Blast Multiple Number per tenant. Diisi dari impor .xlsx
+// (upsert by nomor: yang sudah ada dilewati). AgentID = nomor yang menangani kontak ini
+// seterusnya; 0 = belum ditentukan (diisi otomatis oleh nomor yang pertama mengirim).
+type MultiBlastContact struct {
+	ID          uint       `gorm:"primaryKey" json:"id"`
+	TenantID    uint       `gorm:"uniqueIndex:idx_mbc_tenant_number;not null" json:"tenant_id"`
+	Number      string     `gorm:"uniqueIndex:idx_mbc_tenant_number;size:32;not null" json:"number"`
+	Name        string     `json:"name"`
+	VarsJSON    string     `gorm:"type:text" json:"vars_json"`
+	AgentID     uint       `gorm:"index" json:"agent_id"`
+	BlastCount  int        `gorm:"not null;default:0" json:"blast_count"`
+	LastBlastAt *time.Time `json:"last_blast_at"`
+	CreatedAt   time.Time  `json:"created_at"`
+	UpdatedAt   time.Time  `json:"updated_at"`
+}
+
+// MultiBlastSchema = daftar kolom file impor per tenant (JSON [{"key","label"}]) untuk
+// tabel & placeholder pesan. Kolom baru dari impor berikutnya ditambahkan di belakang.
+type MultiBlastSchema struct {
+	ID          uint   `gorm:"primaryKey" json:"id"`
+	TenantID    uint   `gorm:"uniqueIndex;not null" json:"tenant_id"`
+	ColumnsJSON string `gorm:"type:text" json:"columns_json"`
+}
+
 // Broadcast = satu kampanye pesan massal milik sebuah agent.
 type Broadcast struct {
 	ID       uint `gorm:"primaryKey" json:"id"`
@@ -25,7 +49,13 @@ type Broadcast struct {
 	AgentIDs string `gorm:"type:text" json:"agent_ids,omitempty"`
 	// QuarantineJSON = status karantina nomor selama rotasi (alasan, kode WA, cooldown).
 	// Dipersist agar resume setelah wa_restricted tidak langsung memaksa nomor yang baru saja kena restriksi.
-	QuarantineJSON     string `gorm:"type:text" json:"quarantine_json,omitempty"`
+	QuarantineJSON string `gorm:"type:text" json:"quarantine_json,omitempty"`
+	// AssignMode = cara membagi penerima ke nomor pool. "" = sticky hash (rotasi biasa),
+	// "history" = Blast Multiple Number: penerima menempel ke nomor yang pernah chat dengannya.
+	AssignMode string `gorm:"size:16" json:"assign_mode,omitempty"`
+	// AgentSettingsJSON = jeda/istirahat per nomor yang menimpa setelan global,
+	// JSON map {"<agent_id>":{"min_delay":..,"max_delay":..,"rest_every":..,"rest_duration":..}}.
+	AgentSettingsJSON  string `gorm:"type:text" json:"agent_settings_json,omitempty"`
 	Message            string `gorm:"type:text" json:"message"`
 	ProductID          uint   `gorm:"index" json:"product_id,omitempty"`
 	ProductButtonsJSON string `gorm:"type:text" json:"product_buttons_json,omitempty"`
@@ -75,9 +105,15 @@ type BroadcastRecipient struct {
 	Number string `gorm:"size:64" json:"number"`
 	Name   string `json:"name"`
 	// AgentID = nomor (agent) yang mengirim penerima ini. Untuk rotasi nomor.
-	AgentID uint   `gorm:"index" json:"agent_id"`
-	Status  string `gorm:"size:16;default:pending" json:"status"` // pending, sent, failed, skipped
-	Error   string `json:"error"`
+	AgentID uint `gorm:"index" json:"agent_id"`
+	// Locked = penerima wajib dikirim oleh AgentID di atas (pernah chat dengannya);
+	// failover tidak boleh memindahkannya ke nomor lain.
+	Locked bool `gorm:"not null;default:false" json:"locked,omitempty"`
+	// VarsJSON = variabel per penerima dari file impor, mis. {"no_resi":"JNE123","tanggal":"1/9/2026"},
+	// untuk mengisi placeholder {no_resi} dsb. di template pesan.
+	VarsJSON string `gorm:"type:text" json:"vars_json,omitempty"`
+	Status   string `gorm:"size:16;default:pending" json:"status"` // pending, sent, failed, skipped
+	Error    string `json:"error"`
 	// SentMessage = teks final yang benar-benar dikirim ke penerima ini, yaitu hasil
 	// spin ({a|b}) dan penggantian {nama}. Template mentahnya ada di Broadcast.Message;
 	// kolom ini yang menjawab "orang ini sebenarnya menerima kalimat apa?".

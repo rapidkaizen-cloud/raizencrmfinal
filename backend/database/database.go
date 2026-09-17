@@ -92,6 +92,7 @@ func Init() {
 		&models.CrawlJob{}, &models.CrawlPage{},
 		&models.Tenant{},
 		&models.Broadcast{}, &models.BroadcastRecipient{}, &models.OptOut{}, &models.ContactConsent{},
+		&models.MultiBlastContact{}, &models.MultiBlastSchema{},
 		&models.ScheduledMessage{}, &models.ScheduledStatus{}, &models.Label{}, &models.ChatLabel{}, &models.AutoReply{},
 		&models.Flow{}, &models.FlowSession{}, &models.OTPCode{},
 		&models.MetaConversion{},
@@ -270,8 +271,8 @@ func seedSuperAdmin() {
 		return
 	}
 	// Tolak password lemah agar tidak ada instalasi produksi dengan kredensial mudah ditebak.
-	if len(pw) < 12 {
-		log.Println("Seeder: SUPERADMIN_PASSWORD terlalu pendek (min 12 karakter) — superadmin TIDAK dibuat")
+	if len(pw) < 6 {
+		log.Println("Seeder: SUPERADMIN_PASSWORD terlalu pendek (min 6 karakter) — superadmin TIDAK dibuat")
 		return
 	}
 	hash, _ := bcrypt.GenerateFromPassword([]byte(pw), bcrypt.DefaultCost)
@@ -296,16 +297,23 @@ func syncSuperAdminPassword() {
 	if DB.Where("is_super_admin = ?", true).First(&u).Error != nil {
 		return
 	}
-	// Sudah cocok → cukup pastikan username sinkron.
-	// Password TIDAK di-overwrite — user bisa ganti dari dashboard.
-	if bcrypt.CompareHashAndPassword([]byte(u.Password), []byte(pw)) == nil {
-		if u.Username != username {
-			DB.Model(&u).Update("username", username)
+	// .env adalah sumber kebenaran: dashboard menolak edit/reset super admin
+	// ("dikelola lewat .env"), jadi env harus menang atau kredensial tak bisa diganti sama sekali.
+	if u.Username != username {
+		if err := DB.Model(&u).Update("username", username).Error; err != nil {
+			log.Printf("Super admin: gagal ganti username ke '%s': %v", username, err)
 		}
+	}
+	if bcrypt.CompareHashAndPassword([]byte(u.Password), []byte(pw)) == nil {
 		return
 	}
-	// Password di DB beda dengan .env → user sudah ganti via dashboard. Hormati perubahan user.
-	log.Printf("Super admin '%s': password di DB berbeda dari .env (user sudah ganti via dashboard)", username)
+	if len(pw) < 6 {
+		log.Println("Super admin: SUPERADMIN_PASSWORD terlalu pendek (min 6 karakter) — password TIDAK diganti")
+		return
+	}
+	hash, _ := bcrypt.GenerateFromPassword([]byte(pw), bcrypt.DefaultCost)
+	DB.Model(&u).Update("password", string(hash))
+	log.Printf("Super admin '%s': password disinkronkan dari .env", username)
 }
 
 // seedDefaultTenant memastikan tenant ID=1 selalu ada + punya minimal 1 agent.
