@@ -2,8 +2,9 @@ import { useMemo, useState, type ReactNode } from 'react';
 import {
   Box, Typography, Card, CardContent, TextField, Button, Stack, Alert, Chip, Checkbox, Collapse,
   Divider, Switch, Table, TableBody, TableCell, TableHead, TableRow, CircularProgress, MenuItem, IconButton,
-  Tabs, Tab, FormControlLabel, Pagination,
+  Tabs, Tab, FormControlLabel, Pagination, Dialog, DialogTitle, DialogContent, DialogActions,
 } from '@mui/material';
+import ManageAccountsIcon from '@mui/icons-material/ManageAccountsOutlined';
 import * as XLSX from 'xlsx';
 import SendIcon from '@mui/icons-material/Send';
 import UploadFileIcon from '@mui/icons-material/UploadFileOutlined';
@@ -17,7 +18,7 @@ import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
 import TableChartIcon from '@mui/icons-material/TableChartOutlined';
 import CheckCircleIcon from '@mui/icons-material/CheckCircle';
 import {
-  useAgents, useAgentStatuses, useBroadcasts, useBroadcastDetail, useCancelBroadcast, useCreateBroadcast,
+  useMe, useSaveMultiBlastStructure, useAgents, useAgentStatuses, useBroadcasts, useBroadcastDetail, useCancelBroadcast, useCreateBroadcast,
   useMultiBlastContacts, useMultiBlastContactIds, useImportMultiBlastContacts, useAssignMultiBlastContacts, useDistributeMultiBlastContacts, useDeleteMultiBlastContacts,
 } from '../hooks';
 import { useDraftState } from '../draft';
@@ -375,7 +376,129 @@ function MultiDetail({ agentId, bid }: { agentId: number; bid: number }) {
   );
 }
 
+type BlastRole = 'none' | 'master' | `m:${number}`;
+
+// MasterSetupDialog = atur struktur Blast Multiple Number se-tenant: nomor mana yang jadi master
+// (mengelola data & anggota, tidak mengirim) dan nomor mana yang jadi anggota master tertentu.
+function MasterSetupDialog({ agents, onClose }: { agents: Agent[]; onClose: () => void }) {
+  const save = useSaveMultiBlastStructure();
+  const [roles, setRoles] = useState<Record<number, BlastRole>>(() => Object.fromEntries(agents.map(a =>
+    [a.id, a.is_blast_master ? 'master' : a.blast_master_id ? `m:${a.blast_master_id}` : 'none'] as [number, BlastRole])));
+  const masterIds = agents.filter(a => roles[a.id] === 'master').map(a => a.id);
+  // Anggota yang masternya baru saja diturunkan jatuh ke "tidak ikut".
+  const roleOf = (id: number): BlastRole => {
+    const r = roles[id] || 'none';
+    return r.startsWith('m:') && !masterIds.includes(Number(r.slice(2))) ? 'none' : r;
+  };
+  const submit = async () => {
+    try {
+      await save.mutateAsync(agents.map(a => {
+        const r = roleOf(a.id);
+        return { agent_id: a.id, is_master: r === 'master', master_id: r.startsWith('m:') ? Number(r.slice(2)) : 0 };
+      }));
+      swalToast('Struktur master agent disimpan.');
+      onClose();
+    } catch (error) { swalToast(errorText(error, 'Struktur master belum bisa disimpan.'), 'error'); }
+  };
+  return (
+    <Dialog open onClose={onClose} fullWidth maxWidth="sm">
+      <DialogTitle>Atur master agent & anggota</DialogTitle>
+      <DialogContent dividers>
+        <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
+          <b>Master</b> mengelola data kontak dan anggotanya, tidak ikut mengirim. <b>Anggota</b> adalah nomor pengirim milik satu master.
+          Boleh ada beberapa master; tiap master punya data kontak sendiri.
+        </Typography>
+        <Stack spacing={1}>
+          {agents.map(a => (
+            <Stack key={a.id} direction={{ xs: 'column', sm: 'row' }} sx={{ alignItems: { sm: 'center' }, gap: 1, p: 1, border: '1px solid', borderColor: roleOf(a.id) === 'master' ? 'primary.main' : 'divider', borderRadius: 1.5 }}>
+              <Box sx={{ minWidth: 0, flex: 1 }}>
+                <Typography variant="body2" sx={{ fontWeight: 700 }} noWrap>{a.name || `Nomor ${a.id}`}</Typography>
+                <Typography variant="caption" color="text.secondary" noWrap>{a.number ? `+${a.number}` : 'Belum pernah ditautkan'}</Typography>
+              </Box>
+              <TextField select size="small" value={roleOf(a.id)} sx={{ minWidth: 230 }}
+                onChange={e => setRoles(prev => ({ ...prev, [a.id]: e.target.value as BlastRole }))}>
+                <MenuItem value="none">Tidak ikut</MenuItem>
+                <MenuItem value="master">Master agent</MenuItem>
+                {masterIds.filter(id => id !== a.id).map(id => (
+                  <MenuItem key={id} value={`m:${id}`}>Anggota dari {agentLabel(agents, id)}</MenuItem>
+                ))}
+              </TextField>
+            </Stack>
+          ))}
+        </Stack>
+        <Alert severity="info" icon={false} sx={{ mt: 1.5 }}>
+          Anggota yang dipindah ke master lain membawa kontak yang dipegangnya. Anggota yang dilepas mengembalikan kontaknya ke master lama.
+        </Alert>
+      </DialogContent>
+      <DialogActions>
+        <Button onClick={onClose}>Batal</Button>
+        <Button variant="contained" disabled={save.isPending} onClick={() => { void submit(); }}>{save.isPending ? 'Menyimpan…' : 'Simpan'}</Button>
+      </DialogActions>
+    </Dialog>
+  );
+}
+
+// BlastMultiPanel = gerbang menu: hanya master agent yang membuka panel Blast. Nomor lain
+// melihat posisinya di struktur; super admin bisa mengatur struktur dari sini.
 export default function BlastMultiPanel({ agentId }: { agentId: number }) {
+  const { data: agents = [], isLoading } = useAgents();
+  const { data: me } = useMe();
+  const [setupOpen, setSetupOpen] = useState(false);
+  const self = agents.find(a => a.id === agentId);
+  const masters = agents.filter(a => a.is_blast_master);
+  return (
+    <Box>
+      <PageHeader title="Blast Multiple Number"
+        subtitle="Kirim satu kampanye dari beberapa nomor sekaligus. Tiap kontak dipegang satu nomor seterusnya."
+        action={me?.is_super_admin ? (
+          <Button variant="outlined" startIcon={<ManageAccountsIcon />} onClick={() => setSetupOpen(true)}>Atur master & anggota</Button>
+        ) : undefined} />
+      {isLoading ? (
+        <Box sx={{ textAlign: 'center', py: 4 }}><CircularProgress /></Box>
+      ) : self?.is_blast_master ? (
+        <MasterPanel key={agentId} agentId={agentId} />
+      ) : (
+        <Card>
+          <CardContent>
+            <Alert severity="info" sx={{ mb: 1.5 }}>
+              {self?.blast_master_id
+                ? <><b>{self.name || `Nomor ${agentId}`}</b> adalah anggota master <b>{agentLabel(agents, self.blast_master_id)}</b>. Blast dikelola dari master: pilih <b>{agentLabel(agents, self.blast_master_id)}</b> di dropdown Customer Service.</>
+                : <><b>{self?.name || `Nomor ${agentId}`}</b> bukan master agent dan belum jadi anggota master mana pun.</>}
+            </Alert>
+            <Typography variant="subtitle2" sx={{ fontWeight: 800, mb: 0.75 }}>Struktur saat ini</Typography>
+            {masters.length === 0 ? (
+              <Typography variant="body2" color="text.secondary">
+                Belum ada master agent. {me?.is_super_admin ? 'Klik "Atur master & anggota" untuk menentukannya.' : 'Minta super admin menentukan master agent.'}
+              </Typography>
+            ) : (
+              <Stack spacing={1}>
+                {masters.map(m => {
+                  const members = agents.filter(a => a.blast_master_id === m.id);
+                  return (
+                    <Box key={m.id} sx={{ p: 1, border: '1px solid', borderColor: 'divider', borderRadius: 1.5 }}>
+                      <Stack direction="row" sx={{ alignItems: 'center', gap: 0.75, mb: 0.5 }}>
+                        <Typography variant="body2" sx={{ fontWeight: 700 }}>{m.name || `Nomor ${m.id}`}</Typography>
+                        <Chip size="small" color="primary" variant="outlined" label="Master" />
+                      </Stack>
+                      <Stack direction="row" sx={{ gap: 0.5, flexWrap: 'wrap' }}>
+                        {members.length === 0
+                          ? <Typography variant="caption" color="text.secondary">Belum ada anggota.</Typography>
+                          : members.map(a => <Chip key={a.id} size="small" variant="outlined" label={a.name || `Nomor ${a.id}`} />)}
+                      </Stack>
+                    </Box>
+                  );
+                })}
+              </Stack>
+            )}
+          </CardContent>
+        </Card>
+      )}
+      {setupOpen && <MasterSetupDialog agents={agents} onClose={() => setSetupOpen(false)} />}
+    </Box>
+  );
+}
+
+function MasterPanel({ agentId }: { agentId: number }) {
   const k = (name: string) => `blast-multi:${agentId}:${name}`;
   const [message, setMessage] = useDraftState(k('message'), '');
   const [numbersText, setNumbersText] = useDraftState(k('numbers'), '');
@@ -407,9 +530,9 @@ export default function BlastMultiPanel({ agentId }: { agentId: number }) {
   const loadOf = (id: number) => summary?.per_agent?.[String(id)] || 0;
 
   const isOnline = (id: number) => statusMap[id] === 'connected';
-  // Nomor aktif di dashboard = master: pemilik kampanye yang hanya mengatur, bukan pengirim.
-  // Tab pengirim = semua nomor lain milik tenant.
-  const orderedAgents = useMemo(() => agents.filter(a => a.id !== agentId), [agents, agentId]);
+  // agentId = master agent: pemilik kampanye yang hanya mengatur, bukan pengirim.
+  // Tab pengirim = nomor yang dipasang sebagai anggota master ini (lihat MasterSetupDialog).
+  const orderedAgents = useMemo(() => agents.filter(a => a.blast_master_id === agentId), [agents, agentId]);
   const selectedIds = useMemo(
     () => extraIds.filter(id => orderedAgents.some(a => a.id === id)),
     [extraIds, orderedAgents],
@@ -535,9 +658,6 @@ export default function BlastMultiPanel({ agentId }: { agentId: number }) {
 
   return (
     <Box>
-      <PageHeader title="Blast Multiple Number"
-        subtitle="Kirim satu kampanye dari beberapa nomor sekaligus. Tiap kontak dipegang satu nomor seterusnya." />
-
       <Card sx={{ mb: 2 }}>
         <CardContent>
           <SectionTitle icon={<SyncAltIcon fontSize="small" />} title="Nomor pengirim"

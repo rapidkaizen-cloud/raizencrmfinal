@@ -678,6 +678,10 @@ export interface Agent {
   origin_city_name?: string;
   default_weight_gram?: number;
   enabled_couriers?: string;
+  /** Blast Multiple Number: master mengelola data kontak & anggota, tidak ikut mengirim. */
+  is_blast_master?: boolean;
+  /** Blast Multiple Number: id master tempat nomor ini jadi anggota (pengirim); 0 = tidak ikut. */
+  blast_master_id?: number;
 }
 
 export interface KnowledgeItem {

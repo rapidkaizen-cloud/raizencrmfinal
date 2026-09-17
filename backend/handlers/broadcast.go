@@ -158,6 +158,12 @@ func CreateBroadcast(c *gin.Context) {
 		c.JSON(400, gin.H{"error": "WhatsApp belum tersambung"})
 		return
 	}
+	// Mode multi: pemilik kampanye harus master agent, dan hanya anggotanya yang boleh mengirim.
+	if multi {
+		if _, _, ok := resolveBlastMaster(c); !ok {
+			return
+		}
+	}
 
 	// Rotasi nomor dari form web. Nomor utama selalu menjadi anggota pertama;
 	// nomor tambahan wajib milik tenant yang sama (dan tersambung, kecuali mode multi).
@@ -182,6 +188,10 @@ func CreateBroadcast(c *gin.Context) {
 			database.DB.Model(&models.Agent{}).Where("id = ? AND tenant_id = ?", aid, tid).Count(&count)
 			if count == 0 {
 				c.JSON(400, gin.H{"error": "Ada nomor rotasi yang tidak dikenal"})
+				return
+			}
+			if multi && !agentBelongsToMaster(aid, id, tid) {
+				c.JSON(400, gin.H{"error": "Ada nomor pengirim yang bukan anggota master ini"})
 				return
 			}
 			if !multi && !services.WA(aid).IsConnected() {
@@ -210,7 +220,7 @@ func CreateBroadcast(c *gin.Context) {
 		reqRecipients, skippedOtherAgent = applyContactOwnership(tid, reqRecipients, pool)
 	}
 	if useContacts && multi {
-		fromTable, skippedFromTable := multiBlastRecipients(tid, contactIDs, pool)
+		fromTable, skippedFromTable := multiBlastRecipients(tid, id, contactIDs, pool)
 		skippedOtherAgent += skippedFromTable
 		reqRecipients = append(reqRecipients, fromTable...) // penerima khusus (agent_id dari form) tetap menang saat duplikat
 	}

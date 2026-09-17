@@ -68,10 +68,10 @@ func mergeMultiBlastColumns(tid uint, incoming []multiBlastColumn) []multiBlastC
 
 // ImportMultiBlastContacts = upsert kontak dari file impor: nomor yang sudah ada dilewati.
 func ImportMultiBlastContacts(c *gin.Context) {
-	if _, ok := resolveAgent(c); !ok {
+	masterID, tid, ok := resolveBlastMaster(c)
+	if !ok {
 		return
 	}
-	tid := currentTenantID(c)
 	var req struct {
 		Columns []multiBlastColumn        `json:"columns"`
 		Rows    []broadcastGuardRecipient `json:"rows"`
@@ -105,7 +105,7 @@ func ImportMultiBlastContacts(c *gin.Context) {
 			continue
 		}
 		inserts = append(inserts, models.MultiBlastContact{
-			TenantID: tid, Number: r.Number, Name: r.Name, VarsJSON: encodeVars(r.Vars),
+			TenantID: tid, MasterID: masterID, Number: r.Number, Name: r.Name, VarsJSON: encodeVars(r.Vars),
 		})
 	}
 	// ON CONFLICT DO NOTHING pada unique (tenant_id, number): dua impor bersamaan tidak bisa
@@ -172,10 +172,10 @@ func applyContactOwnership(tid uint, recs []broadcastGuardRecipient, pool []uint
 
 // ListMultiBlastContacts = tabel kontak berpaginasi. Filter: q (nomor/nama), agent_id ("0" = belum di-assign).
 func ListMultiBlastContacts(c *gin.Context) {
-	if _, ok := resolveAgent(c); !ok {
+	masterID, tid, ok := resolveBlastMaster(c)
+	if !ok {
 		return
 	}
-	tid := currentTenantID(c)
 	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
 	if page < 1 {
 		page = 1
@@ -184,7 +184,11 @@ func ListMultiBlastContacts(c *gin.Context) {
 	if limit < 1 || limit > multiBlastMaxPageLimit {
 		limit = multiBlastPageLimit
 	}
-	q := database.DB.Model(&models.MultiBlastContact{}).Where("tenant_id = ?", tid)
+	// Kontak tanpa pemilik (data sebelum fitur master ada, atau bekas master yang diturunkan)
+	// diadopsi master yang pertama membuka menu ini, supaya tidak hilang dari semua tabel.
+	database.DB.Model(&models.MultiBlastContact{}).Where("tenant_id = ? AND master_id = 0", tid).
+		Update("master_id", masterID)
+	q := database.DB.Model(&models.MultiBlastContact{}).Where("tenant_id = ? AND master_id = ?", tid, masterID)
 	if s := strings.TrimSpace(c.Query("q")); s != "" {
 		like := "%" + s + "%"
 		q = q.Where("number LIKE ? OR name LIKE ?", like, like)
@@ -213,7 +217,7 @@ func ListMultiBlastContacts(c *gin.Context) {
 	}
 	var aggs []agg
 	database.DB.Model(&models.MultiBlastContact{}).Select("agent_id, COUNT(*) AS n").
-		Where("tenant_id = ?", tid).Group("agent_id").Scan(&aggs)
+		Where("tenant_id = ? AND master_id = ?", tid, masterID).Group("agent_id").Scan(&aggs)
 	perAgent := map[string]int64{}
 	var unassigned, all int64
 	for _, a := range aggs {
@@ -232,10 +236,10 @@ func ListMultiBlastContacts(c *gin.Context) {
 
 // AssignMultiBlastContacts menetapkan nomor penanggung jawab untuk kontak terpilih (agent_id 0 = lepas).
 func AssignMultiBlastContacts(c *gin.Context) {
-	if _, ok := resolveAgent(c); !ok {
+	masterID, tid, ok := resolveBlastMaster(c)
+	if !ok {
 		return
 	}
-	tid := currentTenantID(c)
 	var req struct {
 		IDs     []uint `json:"ids"`
 		AgentID uint   `json:"agent_id"`
@@ -244,22 +248,22 @@ func AssignMultiBlastContacts(c *gin.Context) {
 		c.JSON(400, gin.H{"error": "Pilih kontak dulu"})
 		return
 	}
-	if req.AgentID != 0 && !agentBelongsToTenant(req.AgentID, tid) {
-		c.JSON(400, gin.H{"error": "Nomor tidak dikenal"})
+	if req.AgentID != 0 && !agentBelongsToMaster(req.AgentID, masterID, tid) {
+		c.JSON(400, gin.H{"error": "Nomor itu bukan anggota master ini"})
 		return
 	}
 	res := database.DB.Model(&models.MultiBlastContact{}).
-		Where("tenant_id = ? AND id IN ?", tid, req.IDs).Update("agent_id", req.AgentID)
+		Where("tenant_id = ? AND master_id = ? AND id IN ?", tid, masterID, req.IDs).Update("agent_id", req.AgentID)
 	c.JSON(200, gin.H{"updated": res.RowsAffected})
 }
 
 // DistributeMultiBlastContacts membagi rata kontak yang belum di-assign ke nomor-nomor terpilih,
 // memperhitungkan beban yang sudah ada agar totalnya seimbang.
 func DistributeMultiBlastContacts(c *gin.Context) {
-	if _, ok := resolveAgent(c); !ok {
+	masterID, tid, ok := resolveBlastMaster(c)
+	if !ok {
 		return
 	}
-	tid := currentTenantID(c)
 	var req struct {
 		AgentIDs []uint `json:"agent_ids"`
 	}
@@ -270,8 +274,8 @@ func DistributeMultiBlastContacts(c *gin.Context) {
 	pool := make([]uint, 0, len(req.AgentIDs))
 	load := map[uint]int{}
 	for _, a := range req.AgentIDs {
-		if a == 0 || !agentBelongsToTenant(a, tid) {
-			c.JSON(400, gin.H{"error": "Ada nomor yang tidak dikenal"})
+		if a == 0 || !agentBelongsToMaster(a, masterID, tid) {
+			c.JSON(400, gin.H{"error": "Ada nomor yang bukan anggota master ini"})
 			return
 		}
 		if _, dup := load[a]; dup {
@@ -283,7 +287,7 @@ func DistributeMultiBlastContacts(c *gin.Context) {
 		pool = append(pool, a)
 	}
 	var rows []models.MultiBlastContact
-	database.DB.Select("id", "number").Where("tenant_id = ? AND agent_id = 0", tid).Order("id asc").Find(&rows)
+	database.DB.Select("id", "number").Where("tenant_id = ? AND master_id = ? AND agent_id = 0", tid, masterID).Order("id asc").Find(&rows)
 	assigned := map[uint]int{}
 	for _, r := range rows {
 		dest := pickFailoverAgent(r.Number, pool, load)
@@ -295,10 +299,10 @@ func DistributeMultiBlastContacts(c *gin.Context) {
 }
 
 func DeleteMultiBlastContacts(c *gin.Context) {
-	if _, ok := resolveAgent(c); !ok {
+	masterID, tid, ok := resolveBlastMaster(c)
+	if !ok {
 		return
 	}
-	tid := currentTenantID(c)
 	var req struct {
 		IDs []uint `json:"ids"`
 	}
@@ -306,24 +310,136 @@ func DeleteMultiBlastContacts(c *gin.Context) {
 		c.JSON(400, gin.H{"error": "Pilih kontak dulu"})
 		return
 	}
-	res := database.DB.Where("tenant_id = ? AND id IN ?", tid, req.IDs).Delete(&models.MultiBlastContact{})
+	res := database.DB.Where("tenant_id = ? AND master_id = ? AND id IN ?", tid, masterID, req.IDs).Delete(&models.MultiBlastContact{})
 	c.JSON(200, gin.H{"deleted": res.RowsAffected})
 }
 
-func agentBelongsToTenant(agentID, tid uint) bool {
+// resolveBlastMaster: agent pada URL harus master agent. Data kontak & aksi di menu ini
+// selalu dalam lingkup satu master.
+func resolveBlastMaster(c *gin.Context) (masterID, tid uint, ok bool) {
+	id, ok := resolveAgent(c)
+	if !ok {
+		return 0, 0, false
+	}
+	var a models.Agent
+	if database.DB.Select("id", "is_blast_master").First(&a, id).Error != nil || !a.IsBlastMaster {
+		c.JSON(403, gin.H{"error": "Nomor ini bukan master agent Blast Multiple Number"})
+		return 0, 0, false
+	}
+	return id, currentTenantID(c), true
+}
+
+// agentBelongsToMaster = agent milik tenant ini DAN anggota master tersebut.
+func agentBelongsToMaster(agentID, masterID, tid uint) bool {
 	var n int64
-	database.DB.Model(&models.Agent{}).Where("id = ? AND tenant_id = ?", agentID, tid).Count(&n)
+	database.DB.Model(&models.Agent{}).
+		Where("id = ? AND tenant_id = ? AND blast_master_id = ?", agentID, tid, masterID).Count(&n)
 	return n > 0
+}
+
+// SaveMultiBlastStructure menyimpan struktur master -> anggota untuk seluruh tenant (super admin).
+// Body: {"items":[{"agent_id":1,"is_master":true},{"agent_id":2,"master_id":1},...]}.
+// Agent yang tidak disebut tidak diubah.
+func SaveMultiBlastStructure(c *gin.Context) {
+	if !isSuperAdmin(c) {
+		c.JSON(403, gin.H{"error": "Hanya super admin yang bisa mengatur master agent"})
+		return
+	}
+	tid := currentTenantID(c)
+	var req struct {
+		Items []struct {
+			AgentID  uint `json:"agent_id"`
+			IsMaster bool `json:"is_master"`
+			MasterID uint `json:"master_id"`
+		} `json:"items"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil || len(req.Items) == 0 {
+		c.JSON(400, gin.H{"error": "Struktur master tidak valid"})
+		return
+	}
+	var agents []models.Agent
+	database.DB.Select("id", "is_blast_master", "blast_master_id").Where("tenant_id = ?", tid).Find(&agents)
+	current := map[uint]models.Agent{}
+	masters := map[uint]bool{} // keadaan akhir: siapa saja yang master
+	for _, a := range agents {
+		current[a.ID] = a
+		masters[a.ID] = a.IsBlastMaster
+	}
+	for _, it := range req.Items {
+		if _, ok := current[it.AgentID]; !ok {
+			c.JSON(400, gin.H{"error": "Ada nomor yang tidak dikenal"})
+			return
+		}
+		masters[it.AgentID] = it.IsMaster
+	}
+	for _, it := range req.Items {
+		if !it.IsMaster && it.MasterID != 0 && (!masters[it.MasterID] || it.MasterID == it.AgentID) {
+			c.JSON(400, gin.H{"error": "Anggota hanya bisa dipasang ke nomor yang berstatus master"})
+			return
+		}
+	}
+	err := database.DB.Transaction(func(tx *gorm.DB) error {
+		for _, it := range req.Items {
+			newMaster := it.MasterID
+			if it.IsMaster {
+				newMaster = 0 // master tidak bisa jadi anggota master lain
+			}
+			if err := tx.Model(&models.Agent{}).Where("id = ? AND tenant_id = ?", it.AgentID, tid).
+				Updates(map[string]any{"is_blast_master": it.IsMaster, "blast_master_id": newMaster}).Error; err != nil {
+				return err
+			}
+			old := current[it.AgentID]
+			contacts := tx.Model(&models.MultiBlastContact{}).Where("tenant_id = ? AND agent_id = ?", tid, it.AgentID)
+			switch {
+			case old.BlastMasterID == newMaster:
+			case newMaster != 0: // pindah master: kontak yang dipegangnya ikut pindah
+				if err := contacts.Update("master_id", newMaster).Error; err != nil {
+					return err
+				}
+			default: // keluar dari master: kontaknya kembali ke kolam master lama
+				if err := contacts.Update("agent_id", 0).Error; err != nil {
+					return err
+				}
+			}
+			// Master yang diturunkan: kontaknya jadi tanpa pemilik (master_id 0) dan diadopsi
+			// master pertama yang membuka menu ini (lihat ListMultiBlastContacts).
+			if old.IsBlastMaster && !it.IsMaster {
+				if err := tx.Model(&models.MultiBlastContact{}).Where("tenant_id = ? AND master_id = ?", tid, it.AgentID).
+					Updates(map[string]any{"master_id": 0, "agent_id": 0}).Error; err != nil {
+					return err
+				}
+			}
+		}
+		// Anggota dari master yang sudah tidak berstatus master dilepas.
+		notMasters := make([]uint, 0)
+		for id, isMaster := range masters {
+			if !isMaster {
+				notMasters = append(notMasters, id)
+			}
+		}
+		if len(notMasters) > 0 {
+			return tx.Model(&models.Agent{}).Where("tenant_id = ? AND blast_master_id IN ?", tid, notMasters).
+				Update("blast_master_id", 0).Error
+		}
+		return nil
+	})
+	if err != nil {
+		c.JSON(500, gin.H{"error": "Struktur master belum bisa disimpan"})
+		return
+	}
+	var out []models.Agent
+	database.DB.Where("tenant_id = ?", tid).Order("id asc").Find(&out)
+	c.JSON(200, gin.H{"data": out})
 }
 
 // multiBlastRecipients memuat penerima dari tabel kontak untuk CreateBroadcast. ids kosong = semua.
 // Kontak yang sudah di-assign ke nomor di luar pool dilewati (tidak boleh dikirim nomor lain).
-func multiBlastRecipients(tid uint, ids []uint, pool []uint) (recipients []broadcastGuardRecipient, skippedOtherAgent int) {
+func multiBlastRecipients(tid, masterID uint, ids []uint, pool []uint) (recipients []broadcastGuardRecipient, skippedOtherAgent int) {
 	poolSet := map[uint]bool{}
 	for _, a := range pool {
 		poolSet[a] = true
 	}
-	q := database.DB.Where("tenant_id = ?", tid)
+	q := database.DB.Where("tenant_id = ? AND master_id = ?", tid, masterID)
 	if len(ids) > 0 {
 		q = q.Where("id IN ?", ids)
 	}

@@ -19,8 +19,12 @@ const (
 // (upsert by nomor: yang sudah ada dilewati). AgentID = nomor yang menangani kontak ini
 // seterusnya; 0 = belum ditentukan (diisi otomatis oleh nomor yang pertama mengirim).
 type MultiBlastContact struct {
-	ID          uint       `gorm:"primaryKey" json:"id"`
-	TenantID    uint       `gorm:"uniqueIndex:idx_mbc_tenant_number;not null" json:"tenant_id"`
+	ID       uint `gorm:"primaryKey" json:"id"`
+	TenantID uint `gorm:"uniqueIndex:idx_mbc_tenant_number;not null" json:"tenant_id"`
+	// MasterID = master agent pemilik kontak ini (yang mengimpornya). Tabel tiap master hanya
+	// menampilkan kontaknya sendiri, tetapi nomor tetap unik se-tenant: satu pelanggan tidak bisa
+	// dimiliki dua master, supaya tidak di-blast oleh dua tim.
+	MasterID    uint       `gorm:"not null;default:0;index" json:"master_id"`
 	Number      string     `gorm:"uniqueIndex:idx_mbc_tenant_number;size:32;not null" json:"number"`
 	Name        string     `json:"name"`
 	VarsJSON    string     `gorm:"type:text" json:"vars_json"`

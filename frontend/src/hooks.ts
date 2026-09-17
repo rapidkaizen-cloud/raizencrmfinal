@@ -709,6 +709,19 @@ export function useMultiBlastContacts(agentId: number, params: { page: number; q
   });
 }
 
+/** Simpan struktur master -> anggota Blast Multiple Number se-tenant (khusus super admin). */
+export function useSaveMultiBlastStructure() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (items: { agent_id: number; is_master: boolean; master_id: number }[]) =>
+      (await api.put('/multi-blast/structure', { items })).data,
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['agents'] });
+      qc.invalidateQueries({ queryKey: ['multi-blast-contacts'] });
+    },
+  });
+}
+
 /** Semua id kontak yang cocok dengan filter, tanpa paginasi — untuk "centang semua" lintas halaman. */
 export function useMultiBlastContactIds(agentId: number, params: { q: string; agent_id: string }) {
   return useQuery<number[]>({

@@ -69,6 +69,13 @@ type Agent struct {
 	// Kosong = semua label konversi memakai MetaEventName (fallback lama).
 	MetaLabelEvents string `gorm:"type:text" json:"meta_label_events"`
 
+	// Blast Multiple Number: struktur master -> anggota.
+	// IsBlastMaster = agent ini master: mengelola data kontak & anggotanya, tidak ikut mengirim.
+	// BlastMasterID = master tempat agent ini menjadi anggota (nomor pengirim); 0 = tidak ikut.
+	// Master tidak bisa menjadi anggota master lain (BlastMasterID selalu 0 untuk master).
+	IsBlastMaster bool `gorm:"not null;default:false;index" json:"is_blast_master"`
+	BlastMasterID uint `gorm:"not null;default:0;index" json:"blast_master_id"`
+
 	CreatedAt time.Time `json:"created_at"`
 }
 

@@ -283,6 +283,8 @@ func main() {
 			auth.POST("/agents/:id/multi-blast/contacts/assign", handlers.AssignMultiBlastContacts)
 			auth.POST("/agents/:id/multi-blast/contacts/distribute", handlers.DistributeMultiBlastContacts)
 			auth.POST("/agents/:id/multi-blast/contacts/delete", handlers.DeleteMultiBlastContacts)
+			// Struktur master -> anggota se-tenant; pengecekan super admin ada di handler.
+			auth.PUT("/multi-blast/structure", handlers.SaveMultiBlastStructure)
 			auth.GET("/agents/:id/chat-contacts", handlers.ChatContacts)
 			auth.GET("/agents/:id/wa-contacts", handlers.WAContacts)
 			auth.POST("/agents/:id/check-numbers", handlers.CheckNumbersOnWA)
