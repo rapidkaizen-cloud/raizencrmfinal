@@ -22,7 +22,6 @@ import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
 import ExpandLessIcon from '@mui/icons-material/ExpandLess';
 import SearchIcon from '@mui/icons-material/Search';
 import ArrowBackIcon from '@mui/icons-material/ArrowBack';
-import MoreVertIcon from '@mui/icons-material/MoreVert';
 import InsertEmoticonIcon from '@mui/icons-material/InsertEmoticon';
 import ContentCopyIcon from '@mui/icons-material/ContentCopy';
 import PhoneOutlinedIcon from '@mui/icons-material/PhoneOutlined';
@@ -1173,7 +1172,7 @@ export default function InboxPanel({
   const isMobile = useMediaQuery(theme.breakpoints.down('md'));
 
   const [labelFilter, setLabelFilter] = useState('');
-  const { data: contacts, isLoading, isFetching } = useContacts(agentId, labelFilter || undefined);
+  const { data: contacts, isLoading, isFetching, refetch: refetchContacts } = useContacts(agentId, labelFilter || undefined);
   const markRead = useMarkConversationRead(agentId);
   const waLabelsSync = useLabels(agentId);
   // Chat yang sedang dibuka ikut disimpan supaya balik ke chat yang sama saat kembali ke tab Inbox.
@@ -1480,8 +1479,8 @@ export default function InboxPanel({
             <Typography sx={{ fontWeight: 700, fontSize: 17, color: '#111b21' }}>Chats</Typography>
             <Stack direction="row" spacing={0.25} sx={{ alignItems: 'center' }}>
               {isFetching && <CircularProgress size={12} sx={{ color: WA.meta, mr: 0.5 }} thickness={5} />}
-              <IconButton size="small" sx={{ color: WA.meta }} aria-label="Menu">
-                <MoreVertIcon fontSize="small" />
+              <IconButton size="small" sx={{ color: WA.meta }} aria-label="Refresh chat" disabled={isFetching} onClick={() => refetchContacts()}>
+                <RefreshIcon fontSize="small" />
               </IconButton>
             </Stack>
           </Stack>
