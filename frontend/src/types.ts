@@ -222,6 +222,8 @@ export interface BroadcastPreflightBody extends BroadcastSafetyForm {
 
 export interface Broadcast {
   id: number;
+  /** Pemilik kampanye. Blast Multiple Number: master agent, bukan nomor pengirim. */
+  agent_id?: number;
   message: string;
   status: string; // pending, running, resuming, wa_restricted, done, failed, interrupted
   pause_reason?: string;
@@ -337,6 +339,38 @@ export interface BroadcastDetailData {
   broadcast: Broadcast;
   recipients: BroadcastRecipient[];
   rotation?: BroadcastRotationSummary;
+}
+
+/** Filter riwayat Blast (list + ringkasan). Tanggal YYYY-MM-DD; kosong = tanpa batas. */
+export interface BroadcastHistoryFilter {
+  from: string;
+  to: string;
+  status: string;
+  /** Id nomor pengirim; '' = semua nomor. */
+  sender: number | '';
+  /** Hanya Blast yang punya penerima berstatus ini (klik kotak ringkasan); '' = semua. */
+  has: '' | 'sent' | 'failed' | 'skipped' | 'pending';
+}
+
+export interface BroadcastSummaryAgent {
+  agent_id: number;
+  name: string;
+  number: string;
+  broadcasts: number;
+  sent: number;
+  failed: number;
+  skipped: number;
+  pending: number;
+}
+
+/** Ringkasan riwayat Blast: total & rincian per nomor pengirim, mengikuti filter. */
+export interface BroadcastSummary {
+  broadcasts: number;
+  sent: number;
+  failed: number;
+  skipped: number;
+  pending: number;
+  per_agent: BroadcastSummaryAgent[];
 }
 
 export interface AutoReply {

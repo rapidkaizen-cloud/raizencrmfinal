@@ -8,6 +8,7 @@ import (
 	"math/rand"
 	"os"
 	"runtime/debug"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -853,9 +854,7 @@ func runBroadcast(broadcastID, agentID uint, minD, maxD int) {
 			markRecipientAttempt(r.ID, "failed", sendErr.Error(), msg)
 			failed++
 		} else {
-			now := time.Now()
-			database.DB.Model(&models.BroadcastRecipient{}).Where("id = ?", r.ID).
-				Updates(map[string]any{"status": "sent", "sent_at": &now, "error": "", "sent_message": msg})
+			recordBroadcastSent(b, agentID, r, sendTo, msg)
 			sent++
 			sentSinceRest++ // hitung menuju istirahat berkala
 		}
@@ -963,6 +962,26 @@ func markRecipientAttempt(id uint, status, errMsg, sentMsg string) {
 		Updates(map[string]any{"status": status, "error": errMsg, "sent_message": sentMsg})
 }
 
+// recordBroadcastSent = satu penerima berhasil dikirim: tandai terkirim, catat ke inbox nomor
+// pengirim (supaya percakapan terlihat di Inbox seperti kiriman follow-up/produk), dan pada
+// Blast Multiple Number perbarui data kontaknya. Dipakai jalur satu-nomor maupun rotasi.
+func recordBroadcastSent(b models.Broadcast, agentID uint, r models.BroadcastRecipient, to, msg string) {
+	now := time.Now()
+	database.DB.Model(&models.BroadcastRecipient{}).Where("id = ?", r.ID).
+		Updates(map[string]any{"status": "sent", "sent_at": &now, "error": "", "sent_message": msg})
+	if b.TargetType == "group" {
+		return
+	}
+	text := msg
+	if strings.TrimSpace(text) == "" && b.MediaType != "" {
+		text = "[" + b.MediaType + "] " + b.FileName
+	}
+	logTurn(agentID, to, "", text, true, "", "")
+	if b.AssignMode == assignModeHistory {
+		recordMultiBlastSent(b.TenantID, r.Number, agentID)
+	}
+}
+
 func updateBroadcastCounters(broadcastID uint, sent, failed, skipped int) {
 	database.DB.Model(&models.Broadcast{}).Where("id = ?", broadcastID).
 		Updates(map[string]any{"sent": sent, "failed": failed, "skipped": skipped})
@@ -1060,7 +1079,41 @@ func spinText(s string) string {
 	return s
 }
 
-// ListBroadcasts mengembalikan riwayat broadcast agent (dipaginate).
+const senderExistsSQL = "EXISTS (SELECT 1 FROM broadcast_recipients r WHERE r.broadcast_id = broadcasts.id AND r.agent_id = ?)"
+
+// broadcastsForAgent = broadcast yang dimiliki nomor ini ATAU yang nomor ini ikut mengirim
+// (anggota pool rotasi / Blast Multiple Number, yang kampanyenya dimiliki master). Filter
+// riwayat dari query string: from/to (YYYY-MM-DD), status, sender (id nomor pengirim), has.
+func broadcastsForAgent(c *gin.Context, agentID uint) *gorm.DB {
+	q := database.DB.Model(&models.Broadcast{}).Where("broadcasts.agent_id = ? OR "+senderExistsSQL, agentID, agentID)
+	if from, err := time.ParseInLocation("2006-01-02", c.Query("from"), time.Local); err == nil {
+		q = q.Where("broadcasts.created_at >= ?", from)
+	}
+	if to, err := time.ParseInLocation("2006-01-02", c.Query("to"), time.Local); err == nil {
+		q = q.Where("broadcasts.created_at < ?", to.AddDate(0, 0, 1))
+	}
+	if s := strings.TrimSpace(c.Query("status")); s != "" {
+		q = q.Where("broadcasts.status = ?", s)
+	}
+	sender, _ := strconv.Atoi(c.Query("sender"))
+	if sender > 0 {
+		q = q.Where(senderExistsSQL, sender)
+	}
+	// has = hanya blast yang punya penerima berstatus ini (sent/failed/skipped/pending),
+	// dari nomor pengirim terpilih bila filter sender aktif.
+	if has := strings.TrimSpace(c.Query("has")); has != "" {
+		sql := "EXISTS (SELECT 1 FROM broadcast_recipients r WHERE r.broadcast_id = broadcasts.id AND r.status = ?"
+		args := []any{has}
+		if sender > 0 {
+			sql += " AND r.agent_id = ?"
+			args = append(args, sender)
+		}
+		q = q.Where(sql+")", args...)
+	}
+	return q.Session(&gorm.Session{})
+}
+
+// ListBroadcasts mengembalikan riwayat broadcast agent (dipaginate, filter lihat broadcastsForAgent).
 func ListBroadcasts(c *gin.Context) {
 	id, ok := resolveAgent(c)
 	if !ok {
@@ -1071,22 +1124,104 @@ func ListBroadcasts(c *gin.Context) {
 		page = 1
 	}
 	const limit = 10
+	q := broadcastsForAgent(c, id)
 	var total int64
-	database.DB.Model(&models.Broadcast{}).Where("agent_id = ?", id).Count(&total)
+	q.Count(&total)
 	var bs []models.Broadcast
-	database.DB.Where("agent_id = ?", id).Order("created_at desc").
-		Offset((page - 1) * limit).Limit(limit).Find(&bs)
+	q.Order("broadcasts.created_at desc").Offset((page - 1) * limit).Limit(limit).Find(&bs)
 	c.JSON(200, gin.H{"data": bs, "total": total, "page": page, "limit": limit})
 }
 
+// BroadcastSummary = ringkasan riwayat untuk header "Riwayat Blast": jumlah blast, total
+// terkirim/gagal/dilewati/menunggu, dan rinciannya per nomor pengirim. Filter sama dengan ListBroadcasts.
+func BroadcastSummary(c *gin.Context) {
+	id, ok := resolveAgent(c)
+	if !ok {
+		return
+	}
+	q := broadcastsForAgent(c, id)
+	var broadcasts int64
+	q.Count(&broadcasts)
+
+	type agentRow struct {
+		AgentID    uint   `json:"agent_id"`
+		Name       string `json:"name"`
+		Number     string `json:"number"`
+		Broadcasts int    `json:"broadcasts"`
+		Sent       int    `json:"sent"`
+		Failed     int    `json:"failed"`
+		Skipped    int    `json:"skipped"`
+		Pending    int    `json:"pending"`
+	}
+	var rows []agentRow
+	rq := database.DB.Table("broadcast_recipients AS r").
+		Select("r.agent_id, COUNT(DISTINCT r.broadcast_id) AS broadcasts, " +
+			"SUM(CASE WHEN r.status = 'sent' THEN 1 ELSE 0 END) AS sent, " +
+			"SUM(CASE WHEN r.status = 'failed' THEN 1 ELSE 0 END) AS failed, " +
+			"SUM(CASE WHEN r.status = 'skipped' THEN 1 ELSE 0 END) AS skipped, " +
+			"SUM(CASE WHEN r.status = 'pending' THEN 1 ELSE 0 END) AS pending").
+		Where("r.broadcast_id IN (?)", q.Select("broadcasts.id")).
+		Group("r.agent_id")
+	if sender, _ := strconv.Atoi(c.Query("sender")); sender > 0 {
+		rq = rq.Where("r.agent_id = ?", sender)
+	}
+	rq.Scan(&rows)
+
+	// Penerima lama tanpa agent_id (sebelum fitur rotasi) = dikirim nomor ini sendiri.
+	byAgent := map[uint]*agentRow{}
+	order := []uint{}
+	for _, r := range rows {
+		if r.AgentID == 0 {
+			r.AgentID = id
+		}
+		if cur, ok := byAgent[r.AgentID]; ok {
+			cur.Broadcasts += r.Broadcasts
+			cur.Sent, cur.Failed, cur.Skipped, cur.Pending = cur.Sent+r.Sent, cur.Failed+r.Failed, cur.Skipped+r.Skipped, cur.Pending+r.Pending
+			continue
+		}
+		rc := r
+		byAgent[r.AgentID] = &rc
+		order = append(order, r.AgentID)
+	}
+	var agents []models.Agent
+	if len(order) > 0 {
+		database.DB.Select("id", "name", "number").Where("id IN ?", order).Find(&agents)
+	}
+	for _, a := range agents {
+		if row := byAgent[a.ID]; row != nil {
+			row.Name, row.Number = a.Name, a.Number
+		}
+	}
+	perAgent := make([]agentRow, 0, len(order))
+	total := agentRow{}
+	for _, aid := range order {
+		row := *byAgent[aid]
+		if row.Name == "" {
+			row.Name = fmt.Sprintf("Nomor %d", aid)
+		}
+		perAgent = append(perAgent, row)
+		total.Sent, total.Failed, total.Skipped, total.Pending = total.Sent+row.Sent, total.Failed+row.Failed, total.Skipped+row.Skipped, total.Pending+row.Pending
+	}
+	sort.SliceStable(perAgent, func(i, j int) bool { return perAgent[i].Sent > perAgent[j].Sent })
+	c.JSON(200, gin.H{"data": gin.H{
+		"broadcasts": broadcasts,
+		"sent":       total.Sent,
+		"failed":     total.Failed,
+		"skipped":    total.Skipped,
+		"pending":    total.Pending,
+		"per_agent":  perAgent,
+	}})
+}
+
 // BroadcastDetail = detail satu broadcast beserta status tiap penerima + ringkasan rotasi/karantina.
+// Anggota pool boleh melihat detail kampanye yang dimiliki master-nya.
 func BroadcastDetail(c *gin.Context) {
 	id, ok := resolveAgent(c)
 	if !ok {
 		return
 	}
 	var b models.Broadcast
-	if database.DB.Where("id = ? AND agent_id = ?", c.Param("bid"), id).First(&b).Error != nil {
+	if database.DB.Where("broadcasts.id = ? AND (broadcasts.agent_id = ? OR "+senderExistsSQL+")", c.Param("bid"), id, id).First(&b).Error != nil {
 		c.JSON(404, gin.H{"error": "Broadcast tidak ditemukan"})
 		return
 	}

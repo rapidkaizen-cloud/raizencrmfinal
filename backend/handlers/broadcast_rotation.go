@@ -835,13 +835,8 @@ func runBroadcastAgentWorker(broadcastID, agentID uint, b models.Broadcast, minD
 				consecutiveSystemic = 0
 			}
 		} else {
-			now := time.Now()
-			database.DB.Model(&models.BroadcastRecipient{}).Where("id = ?", r.ID).
-				Updates(map[string]any{"status": "sent", "sent_at": &now, "error": "", "sent_message": msg})
+			recordBroadcastSent(b, agentID, r, sendTo, msg)
 			bumpBroadcastCounter(broadcastID, "sent")
-			if b.AssignMode == assignModeHistory && !isGroupBroadcast {
-				recordMultiBlastSent(b.TenantID, r.Number, agentID)
-			}
 			sentSinceRest++
 			consecutiveSystemic = 0
 		}

@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useState, useRef, Fragment, type ReactNode } from 'react';
+import { useEffect, useMemo, useState, useRef, type ReactNode } from 'react';
 import {
-  Box, Typography, Card, CardContent, TextField, Button, Stack, Alert, Chip, Collapse,
+  Box, Typography, Card, CardContent, TextField, Button, Stack, Alert, Chip,
   Table, TableBody, TableCell, TableHead, TableRow, CircularProgress,
   Dialog, DialogTitle, DialogContent, DialogActions, Divider, useMediaQuery,
   Checkbox, Accordion, AccordionSummary, AccordionDetails, MenuItem,
@@ -18,7 +18,7 @@ import InfoIcon from '@mui/icons-material/InfoOutlined';
 import RefreshIcon from '@mui/icons-material/Refresh';
 import FactCheckIcon from '@mui/icons-material/FactCheckOutlined';
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
-import { useCreateBroadcast, useBroadcasts, useBroadcastDetail, useCancelBroadcast, useResumeBroadcast, useCheckNumbers, useAgents, useAgentStatuses, useTestBroadcastRotation, useProducts, type BroadcastRotationTestResult } from '../hooks';
+import { useCreateBroadcast, useBroadcasts, useBroadcastDetail, useCancelBroadcast, useResumeBroadcast, useCheckNumbers, useAgents, useAgentStatuses, useTestBroadcastRotation, useProducts, EMPTY_BROADCAST_FILTER, type BroadcastRotationTestResult } from '../hooks';
 import { useDraftState } from '../draft';
 import SyncAltIcon from '@mui/icons-material/SyncAltOutlined';
 import { swalToast, swalConfirm } from '../services/swal';
@@ -30,8 +30,10 @@ import DelayFields from './broadcast/DelayFields';
 import { useBlastDelay } from './broadcast/useBlastDelay';
 import BroadcastProgress from './broadcast/BroadcastProgress';
 import BroadcastQuarantineSummary from './broadcast/BroadcastQuarantineSummary';
+import BroadcastHistorySummary from './broadcast/BroadcastHistorySummary';
+import RecipientList from './broadcast/RecipientList';
 import { defaultBroadcastSafetyForm } from '../services/broadcastSafety';
-import type { Broadcast, Product } from '../types';
+import type { Broadcast, BroadcastHistoryFilter, Product } from '../types';
 
 function normalizePhone(s: string): string {
   const d = (s.match(/\d/g) || []).join('');
@@ -75,12 +77,6 @@ export const STATUS_COLOR: Record<string, 'success' | 'warning' | 'error' | 'def
 export const STATUS_LABEL: Record<string, string> = {
   done: 'Selesai', running: 'Berjalan', pending: 'Antre', failed: 'Gagal', interrupted: 'Terhenti',
   resuming: 'Mencoba lanjut', wa_restricted: 'Dijeda WhatsApp', cancel_requested: 'Membatalkan', cancelled: 'Dibatalkan',
-};
-const RCP_COLOR: Record<string, 'success' | 'warning' | 'error' | 'default'> = {
-  sent: 'success', failed: 'error', skipped: 'default', pending: 'warning',
-};
-const RCP_LABEL: Record<string, string> = {
-  sent: 'Terkirim', failed: 'Gagal', skipped: 'Dilewati', pending: 'Menunggu',
 };
 function SectionTitle({ icon, title, subtitle, action }: { icon: ReactNode; title: string; subtitle?: string; action?: ReactNode }) {
   return (
@@ -156,17 +152,9 @@ export default function BroadcastPanel({ agentId, seed }: { agentId: number; see
   const historyRef = useRef<HTMLDivElement | null>(null);
 
   const [detailId, setDetailId] = useState<number | null>(null);
-  const [detailFilter, setDetailFilter] = useState<'all' | 'sent' | 'failed' | 'skipped' | 'pending'>('all');
-  const [detailSearch, setDetailSearch] = useState('');
-  // Penerima yang barisnya sedang dibuka untuk melihat teks pesan yang ia terima.
-  // Set (bukan satu id) supaya beberapa varian spin bisa dibandingkan berdampingan.
-  const [openMsgIds, setOpenMsgIds] = useState<Set<number>>(new Set());
-  const toggleMsg = (id: number) => setOpenMsgIds(prev => {
-    const next = new Set(prev);
-    if (!next.delete(id)) next.add(id);
-    return next;
-  });
-  const closeDetail = () => { setDetailId(null); setDetailFilter('all'); setDetailSearch(''); setOpenMsgIds(new Set()); };
+  const closeDetail = () => setDetailId(null);
+  // Filter riwayat (periode/status/nomor pengirim) dipakai ringkasan & daftar sekaligus.
+  const [historyFilter, setHistoryFilter] = useState<BroadcastHistoryFilter>(EMPTY_BROADCAST_FILTER);
 
   const createBroadcast = useCreateBroadcast(agentId);
   const cancelBroadcast = useCancelBroadcast(agentId);
@@ -176,7 +164,7 @@ export default function BroadcastPanel({ agentId, seed }: { agentId: number; see
   // Pratinjau spin: nonce menaikkan versi agar tombol "Acak lagi" menghasilkan varian baru.
   const [spinNonce, setSpinNonce] = useState(0);
   const [spinHelpOpen, setSpinHelpOpen] = useState(false);
-  const { data: bpage } = useBroadcasts(agentId, page);
+  const { data: bpage } = useBroadcasts(agentId, page, historyFilter);
   const { data: detail } = useBroadcastDetail(agentId, detailId);
   const broadcasts = bpage?.data || [];
   const totalPages = Math.max(1, Math.ceil((bpage?.total || 0) / (bpage?.limit || 10)));
@@ -315,7 +303,8 @@ export default function BroadcastPanel({ agentId, seed }: { agentId: number; see
   const broadcastActions = (broadcast: Broadcast, fullWidth = false) => {
     const remaining = Math.max(0, broadcast.total - broadcast.sent - broadcast.failed - broadcast.skipped);
     const canCancel = ['pending', 'running', 'resuming', 'interrupted', 'wa_restricted', 'cancel_requested'].includes(broadcast.status);
-    if (!canCancel) return null;
+    // Kampanye milik master (Blast Multiple Number) hanya bisa dikendalikan dari panel master.
+    if (!canCancel || (broadcast.agent_id && broadcast.agent_id !== agentId)) return null;
     return (
       <Stack direction={{ xs: fullWidth ? 'column' : 'row', sm: 'row' }} spacing={0.75} sx={{ justifyContent: 'flex-end' }}>
         {broadcast.status === 'wa_restricted' && (
@@ -606,6 +595,7 @@ export default function BroadcastPanel({ agentId, seed }: { agentId: number; see
             title="Riwayat Blast"
             subtitle={broadcasts.length ? 'Progres diperbarui otomatis. Buka item untuk melihat setiap penerima.' : 'Blast yang sudah dimulai akan muncul di sini.'}
           />
+          <BroadcastHistorySummary agentId={agentId} agents={agents} filter={historyFilter} onChange={f => { setHistoryFilter(f); setPage(1); }} />
           {broadcasts.length === 0 ? (
             <Alert severity="info" icon={false}>Belum ada Blast yang tercatat untuk nomor ini.</Alert>
           ) : (
@@ -686,17 +676,6 @@ export default function BroadcastPanel({ agentId, seed }: { agentId: number; see
         <DialogTitle>Detail Blast</DialogTitle>
         <DialogContent dividers>
           {detail ? (() => {
-            const recs = detail.recipients;
-            const q = detailSearch.replace(/\D/g, '');
-            const shown = recs.filter(r =>
-              (detailFilter === 'all' || r.status === detailFilter) && (!q || r.number.includes(q)));
-            const FILTERS = [
-              { k: 'all' as const, label: `Semua ${recs.length}` },
-              { k: 'sent' as const, label: `Terkirim ${detail.broadcast.sent}` },
-              { k: 'failed' as const, label: `Gagal ${detail.broadcast.failed}` },
-              { k: 'skipped' as const, label: `Dilewati ${detail.broadcast.skipped}` },
-              { k: 'pending' as const, label: `Menunggu ${Math.max(0, detail.broadcast.total - detail.broadcast.sent - detail.broadcast.failed - detail.broadcast.skipped)}` },
-            ];
             return (
               <>
                 <Box sx={{ p: 1.25, mb: 1.5, bgcolor: 'action.hover', borderRadius: 1 }}>
@@ -759,121 +738,7 @@ export default function BroadcastPanel({ agentId, seed }: { agentId: number; see
                     })()}
                   </Box>
 
-                  <Box sx={{ minWidth: 0, p: 1.25, border: '1px solid', borderColor: 'divider', borderRadius: 1 }}>
-                    <Typography variant="subtitle2" sx={{ fontWeight: 800 }}>Daftar Penerima</Typography>
-                    <Typography variant="caption" color="text.secondary">Cari atau filter berdasarkan hasil pengiriman.</Typography>
-                    <Stack direction="row" spacing={0.75} sx={{ my: 1, flexWrap: 'wrap', gap: 0.75 }}>
-                      {FILTERS.map(f => (
-                        <Chip key={f.k} size="small" label={f.label} onClick={() => setDetailFilter(f.k)}
-                          color={detailFilter === f.k ? 'primary' : 'default'} variant={detailFilter === f.k ? 'filled' : 'outlined'} />
-                      ))}
-                    </Stack>
-                    <TextField size="small" fullWidth placeholder="Cari nomor…" value={detailSearch}
-                      onChange={e => setDetailSearch(e.target.value)} sx={{ mb: 1 }} />
-                    <Box sx={{ display: { xs: 'none', sm: 'block' }, maxHeight: { sm: 420, md: 'min(48vh, 460px)' }, overflowY: 'auto', border: '1px solid', borderColor: 'divider', borderRadius: 1 }}>
-                      <Table size="small" stickyHeader>
-                        <TableHead>
-                          <TableRow>
-                            <TableCell>Nomor</TableCell>
-                            <TableCell>Nama</TableCell>
-                            {detail.rotation?.enabled && <TableCell>CS</TableCell>}
-                            <TableCell align="right">Status</TableCell>
-                          </TableRow>
-                        </TableHead>
-                        <TableBody>
-                          {shown.map(r => {
-                            const cs = detail.rotation?.agents?.find(a => a.id === r.agent_id);
-                            const hasMsg = !!r.sent_message;
-                            const open = openMsgIds.has(r.id);
-                            const cols = detail.rotation?.enabled ? 4 : 3;
-                            return (
-                              <Fragment key={r.id}>
-                                <TableRow
-                                  hover={hasMsg}
-                                  onClick={hasMsg ? () => toggleMsg(r.id) : undefined}
-                                  sx={hasMsg ? { cursor: 'pointer', '& > *': { borderBottom: open ? 'none' : undefined } } : undefined}
-                                >
-                                  <TableCell>
-                                    <Stack direction="row" sx={{ alignItems: 'center', gap: 0.5 }}>
-                                      {hasMsg && <ExpandMoreIcon fontSize="small" sx={{ color: 'text.secondary', transform: open ? 'rotate(180deg)' : 'none', transition: 'transform .15s' }} />}
-                                      <span>+{r.number}</span>
-                                    </Stack>
-                                  </TableCell>
-                                  <TableCell>{r.name || '-'}</TableCell>
-                                  {detail.rotation?.enabled && (
-                                    <TableCell>
-                                      <Typography variant="caption" color="text.secondary" noWrap>
-                                        {cs?.name || (r.agent_id ? `#${r.agent_id}` : '—')}
-                                      </Typography>
-                                    </TableCell>
-                                  )}
-                                  <TableCell align="right">
-                                    <Chip size="small" label={RCP_LABEL[r.status] ?? r.status} color={RCP_COLOR[r.status] ?? 'default'} />
-                                    {r.error && <Typography variant="caption" color={r.status === 'pending' ? 'warning.main' : 'error'} sx={{ display: 'block' }}>{r.error}</Typography>}
-                                  </TableCell>
-                                </TableRow>
-                                {hasMsg && (
-                                  <TableRow>
-                                    <TableCell colSpan={cols} sx={{ py: 0, borderBottom: open ? undefined : 'none' }}>
-                                      <Collapse in={open} unmountOnExit>
-                                        <Box sx={{ my: 1, p: 1, bgcolor: 'action.hover', borderRadius: 1 }}>
-                                          <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 0.5 }}>
-                                            Pesan yang diterima nomor ini
-                                          </Typography>
-                                          <Typography variant="body2" sx={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{r.sent_message}</Typography>
-                                        </Box>
-                                      </Collapse>
-                                    </TableCell>
-                                  </TableRow>
-                                )}
-                              </Fragment>
-                            );
-                          })}
-                        </TableBody>
-                      </Table>
-                    </Box>
-                    <Stack spacing={0.75} sx={{ display: { xs: 'flex', sm: 'none' }, maxHeight: '44svh', overflowY: 'auto', pr: 0.25 }}>
-                      {shown.map(r => {
-                        const cs = detail.rotation?.agents?.find(a => a.id === r.agent_id);
-                        const hasMsg = !!r.sent_message;
-                        const open = openMsgIds.has(r.id);
-                        return (
-                          <Box key={r.id} onClick={hasMsg ? () => toggleMsg(r.id) : undefined}
-                            sx={{ p: 1, border: '1px solid', borderColor: 'divider', borderRadius: 1, cursor: hasMsg ? 'pointer' : 'default' }}>
-                            <Stack direction="row" sx={{ alignItems: 'flex-start', justifyContent: 'space-between', gap: 1 }}>
-                              <Box sx={{ minWidth: 0 }}>
-                                <Typography variant="body2" sx={{ fontWeight: 700 }}>+{r.number}</Typography>
-                                <Typography variant="caption" color="text.secondary">{r.name || 'Tanpa nama'}</Typography>
-                                {detail.rotation?.enabled && (
-                                  <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
-                                    CS: {cs?.name || (r.agent_id ? `#${r.agent_id}` : '—')}
-                                  </Typography>
-                                )}
-                                {r.error && <Typography variant="caption" color={r.status === 'pending' ? 'warning.main' : 'error'} sx={{ display: 'block' }}>{r.error}</Typography>}
-                                {hasMsg && (
-                                  <Typography variant="caption" color="primary" sx={{ display: 'block', mt: 0.25 }}>
-                                    {open ? 'Sembunyikan pesan' : 'Lihat pesan yang diterima'}
-                                  </Typography>
-                                )}
-                              </Box>
-                              <Chip size="small" label={RCP_LABEL[r.status] ?? r.status} color={RCP_COLOR[r.status] ?? 'default'} sx={{ flexShrink: 0 }} />
-                            </Stack>
-                            {hasMsg && (
-                              <Collapse in={open} unmountOnExit>
-                                <Box sx={{ mt: 1, p: 1, bgcolor: 'action.hover', borderRadius: 1 }}>
-                                  <Typography variant="body2" sx={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{r.sent_message}</Typography>
-                                </Box>
-                              </Collapse>
-                            )}
-                          </Box>
-                        );
-                      })}
-                    </Stack>
-                    {shown.length === 0 && <Typography variant="body2" color="text.secondary" sx={{ py: 3, textAlign: 'center' }}>Tidak ada penerima yang cocok.</Typography>}
-                    <Typography variant="caption" color="text.secondary" sx={{ mt: 1, display: 'block' }}>
-                      Menampilkan {shown.length} dari {recs.length} penerima
-                    </Typography>
-                  </Box>
+                  <RecipientList detail={detail} />
                 </Box>
               </>
             );

@@ -271,6 +271,7 @@ func main() {
 			auth.GET("/agents/:id/ai-forms", handlers.ListAIForms)
 			auth.GET("/agents/:id/ai-form-submissions", handlers.ListAIFormSubmissions)
 			auth.GET("/agents/:id/broadcast/consent-summary", handlers.BroadcastConsentSummary)
+			auth.GET("/agents/:id/broadcast/summary", handlers.BroadcastSummary)
 			auth.POST("/agents/:id/broadcast", handlers.CreateBroadcast)
 			auth.POST("/agents/:id/broadcast/rotation-test", handlers.TestBroadcastRotation)
 			auth.GET("/agents/:id/broadcasts", handlers.ListBroadcasts)

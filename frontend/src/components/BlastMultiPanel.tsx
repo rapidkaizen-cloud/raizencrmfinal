@@ -23,10 +23,13 @@ import CloseIcon from '@mui/icons-material/Close';
 import {
   useMe, useSaveMultiBlastStructure, useAgents, useAgentStatuses, useBroadcasts, useBroadcastDetail, useCancelBroadcast, useCreateBroadcast,
   useMultiBlastContacts, useMultiBlastContactIds, useImportMultiBlastContacts, useAssignMultiBlastContacts, useDistributeMultiBlastContacts, useDeleteMultiBlastContacts, useUpdateMultiBlastContact,
+  EMPTY_BROADCAST_FILTER,
 } from '../hooks';
 import { useDraftState } from '../draft';
 import { swalConfirm, swalConfirmDelete, swalToast } from '../services/swal';
-import { normalizePhone, type Agent, type BlastDelay, type Broadcast, type MultiBlastColumn, type MultiBlastContact } from '../types';
+import { normalizePhone, type Agent, type BlastDelay, type Broadcast, type BroadcastHistoryFilter, type MultiBlastColumn, type MultiBlastContact } from '../types';
+import BroadcastHistorySummary from './broadcast/BroadcastHistorySummary';
+import RecipientList from './broadcast/RecipientList';
 import { defaultBroadcastSafetyForm } from '../services/broadcastSafety';
 import WhatsAppEditor, { VAR_DRAG_TYPE } from './WhatsAppEditor';
 import TemplatePicker from './TemplatePicker';
@@ -475,6 +478,7 @@ function MultiDetail({ agentId, bid }: { agentId: number; bid: number }) {
           </Stack>
         ))}
       </Stack>
+      <Box sx={{ mt: 1 }}><RecipientList detail={data} /></Box>
     </Box>
   );
 }
@@ -612,6 +616,7 @@ function MasterPanel({ agentId }: { agentId: number }) {
   const [spinNonce, setSpinNonce] = useState(0);
   const [page, setPage] = useState(1);
   const [openId, setOpenId] = useState<number | null>(null);
+  const [historyFilter, setHistoryFilter] = useState<BroadcastHistoryFilter>(EMPTY_BROADCAST_FILTER);
   // Centang di tabel global = penerima Blast.
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const {
@@ -625,7 +630,7 @@ function MasterPanel({ agentId }: { agentId: number }) {
   const cancelBroadcast = useCancelBroadcast(agentId);
   const importM = useImportMultiBlastContacts(agentId);
   const distributeM = useDistributeMultiBlastContacts(agentId);
-  const { data: bpage } = useBroadcasts(agentId, page);
+  const { data: bpage } = useBroadcasts(agentId, page, historyFilter);
   // Ringkasan data kontak (kolom, beban per nomor, jumlah) + baris untuk pratinjau.
   const { data: summary } = useMultiBlastContacts(agentId, { page: 1, q: '', agent_id: '' });
   const broadcasts = bpage?.data || [];
@@ -901,6 +906,7 @@ function MasterPanel({ agentId }: { agentId: number }) {
       <Card sx={{ mt: 2 }}>
         <CardContent>
           <SectionTitle icon={<HistoryIcon fontSize="small" />} title="Riwayat Blast" subtitle="Buka item untuk melihat pembagian per nomor." />
+          <BroadcastHistorySummary agentId={agentId} agents={orderedAgents} filter={historyFilter} onChange={f => { setHistoryFilter(f); setPage(1); }} />
           {broadcasts.length === 0 ? (
             <Alert severity="info" icon={false}>Belum ada Blast untuk nomor ini.</Alert>
           ) : (

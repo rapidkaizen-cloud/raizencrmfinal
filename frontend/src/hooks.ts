@@ -2,7 +2,7 @@ import { useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import api from './services/api';
 import { writeBlastDelayCache } from './types';
-import type { Analytics, AIMetrics, Contact, ChatMsg, ConversationBrief, Broadcast, BroadcastDetailData, BroadcastSafetyForm, BroadcastConsentSummary, WAGroup, GroupGuardConfig, GroupModerationLog, LabelInfo, ScheduledMessage, AutoReply, Template, SavedContact, SavedContactsResp, LeadStage, FollowUp, Agent, KnowledgeItem, Handoff, CrawlJob, CrawlPage, KnowledgeUsage, ScheduledStatus, ApiSettings, Flow, Product, ProductOrder, AIForm, AIFormSubmission, MediaAsset, LearningStatus, LearningScore, LearningRun, LearningRunDetail, LearningPatternPage, LearningSnapshot, LearningConfig, MetaConfigData, LeadStageDef, LabelRule, PipelineData, User, BlastDelay, TeamUser, CSActivityLog, CreateTeamUserRequest, UpdateTeamUserRequest, MultiBlastColumn, MultiBlastContactsResp } from './types';
+import type { Analytics, AIMetrics, Contact, ChatMsg, ConversationBrief, Broadcast, BroadcastDetailData, BroadcastSafetyForm, BroadcastConsentSummary, WAGroup, GroupGuardConfig, GroupModerationLog, LabelInfo, ScheduledMessage, AutoReply, Template, SavedContact, SavedContactsResp, LeadStage, FollowUp, Agent, KnowledgeItem, Handoff, CrawlJob, CrawlPage, KnowledgeUsage, ScheduledStatus, ApiSettings, Flow, Product, ProductOrder, AIForm, AIFormSubmission, MediaAsset, LearningStatus, LearningScore, LearningRun, LearningRunDetail, LearningPatternPage, LearningSnapshot, LearningConfig, MetaConfigData, LeadStageDef, LabelRule, PipelineData, User, BlastDelay, TeamUser, CSActivityLog, CreateTeamUserRequest, UpdateTeamUserRequest, MultiBlastColumn, MultiBlastContactsResp, BroadcastHistoryFilter, BroadcastSummary } from './types';
 
 type ContactList = { number: string; name: string }[];
 
@@ -228,13 +228,32 @@ export function useBroadcastConsentSummary(agentId: number) {
   });
 }
 
-export function useBroadcasts(agentId: number, page: number) {
+export const EMPTY_BROADCAST_FILTER: BroadcastHistoryFilter = { from: '', to: '', status: '', sender: '', has: '' };
+
+// Query string filter riwayat; nilai kosong tidak dikirim.
+function broadcastFilterParams(f: BroadcastHistoryFilter) {
+  return Object.fromEntries(Object.entries(f).filter(([, v]) => v !== '' && v !== undefined));
+}
+
+export function useBroadcasts(agentId: number, page: number, filter: BroadcastHistoryFilter = EMPTY_BROADCAST_FILTER) {
   return useQuery<{ data: Broadcast[]; total: number; page: number; limit: number }>({
-    queryKey: ['broadcasts', agentId, page],
-    queryFn: async () => (await api.get(`/agents/${agentId}/broadcasts`, { params: { page } })).data,
+    queryKey: ['broadcasts', agentId, page, filter],
+    queryFn: async () => (await api.get(`/agents/${agentId}/broadcasts`, { params: { page, ...broadcastFilterParams(filter) } })).data,
     enabled: !!agentId,
     // Respons cepat ketika ada worker aktif, lebih hemat request saat riwayat diam.
     refetchInterval: query => query.state.data?.data.some(b => LIVE_BROADCAST_STATUSES.has(b.status)) ? 2000 : 10000,
+    refetchIntervalInBackground: false,
+  });
+}
+
+export function useBroadcastSummary(agentId: number, f: BroadcastHistoryFilter) {
+  // `has` hanya menyaring daftar — angka ringkasan tetap agar kotaknya bisa dipakai berpindah filter.
+  const filter = { ...f, has: '' as const };
+  return useQuery<BroadcastSummary>({
+    queryKey: ['broadcasts', agentId, 'summary', filter],
+    queryFn: async () => (await api.get(`/agents/${agentId}/broadcast/summary`, { params: broadcastFilterParams(filter) })).data.data,
+    enabled: !!agentId,
+    refetchInterval: 10000,
     refetchIntervalInBackground: false,
   });
 }
