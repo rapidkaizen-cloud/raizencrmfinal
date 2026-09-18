@@ -298,6 +298,56 @@ func DistributeMultiBlastContacts(c *gin.Context) {
 	c.JSON(200, gin.H{"assigned": len(rows), "per_agent": assigned})
 }
 
+// UpdateMultiBlastContact mengubah satu kontak: nomor, nama, variabel, dan penanggung jawab.
+// blast_count / last_blast_at tidak bisa diubah dari sini (riwayat).
+func UpdateMultiBlastContact(c *gin.Context) {
+	masterID, tid, ok := resolveBlastMaster(c)
+	if !ok {
+		return
+	}
+	var req struct {
+		ID      uint              `json:"id"`
+		Number  string            `json:"number"`
+		Name    string            `json:"name"`
+		Vars    map[string]string `json:"vars"`
+		AgentID uint              `json:"agent_id"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil || req.ID == 0 {
+		c.JSON(400, gin.H{"error": "Data kontak tidak valid"})
+		return
+	}
+	number := services.NormalizePhone(req.Number)
+	if number == "" {
+		c.JSON(400, gin.H{"error": "Nomor tidak valid"})
+		return
+	}
+	if req.AgentID != 0 && !agentBelongsToMaster(req.AgentID, masterID, tid) {
+		c.JSON(400, gin.H{"error": "Nomor itu bukan anggota master ini"})
+		return
+	}
+	var dup int64
+	database.DB.Model(&models.MultiBlastContact{}).
+		Where("tenant_id = ? AND number = ? AND id <> ?", tid, number, req.ID).Count(&dup)
+	if dup > 0 {
+		c.JSON(400, gin.H{"error": "Nomor +" + number + " sudah ada di data kontak"})
+		return
+	}
+	res := database.DB.Model(&models.MultiBlastContact{}).
+		Where("tenant_id = ? AND master_id = ? AND id = ?", tid, masterID, req.ID).
+		Updates(map[string]any{
+			"number": number, "name": strings.TrimSpace(req.Name), "vars_json": encodeVars(req.Vars), "agent_id": req.AgentID,
+		})
+	if res.Error != nil {
+		c.JSON(500, gin.H{"error": "Kontak belum bisa disimpan"})
+		return
+	}
+	if res.RowsAffected == 0 {
+		c.JSON(404, gin.H{"error": "Kontak tidak ditemukan"})
+		return
+	}
+	c.JSON(200, gin.H{"updated": res.RowsAffected})
+}
+
 func DeleteMultiBlastContacts(c *gin.Context) {
 	masterID, tid, ok := resolveBlastMaster(c)
 	if !ok {

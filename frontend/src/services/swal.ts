@@ -19,6 +19,26 @@ export async function swalConfirm(title: string, text?: string): Promise<boolean
   return result.isConfirmed;
 }
 
+/**
+ * Konfirmasi aksi destruktif (hapus). Beda dari swalConfirm: ikon peringatan, tombol utama merah
+ * berlabel aksinya ("Hapus"), dan fokus awal di Batal supaya Enter tidak langsung menghapus.
+ */
+export async function swalConfirmDelete(title: string, text?: string, confirmText = 'Hapus'): Promise<boolean> {
+  const result = await swal.fire({
+    title,
+    text,
+    icon: 'warning',
+    iconColor: '#e53935',
+    showCancelButton: true,
+    confirmButtonText: confirmText,
+    confirmButtonColor: '#e53935',
+    cancelButtonText: 'Batal',
+    focusCancel: true,
+    reverseButtons: true,
+  });
+  return result.isConfirmed;
+}
+
 /** Prompt input teks. Return string atau null kalau batal. */
 export async function swalPrompt(title: string, placeholder?: string): Promise<string | null> {
   const result = await swal.fire({

@@ -2,7 +2,7 @@ import { useMemo, useState, type ReactNode } from 'react';
 import {
   Box, Typography, Card, CardContent, TextField, Button, Stack, Alert, Chip, Checkbox, Collapse,
   Divider, Switch, Table, TableBody, TableCell, TableHead, TableRow, CircularProgress, MenuItem, IconButton,
-  Tabs, Tab, FormControlLabel, Pagination, Dialog, DialogTitle, DialogContent, DialogActions,
+  Tabs, Tab, FormControlLabel, Pagination, Dialog, DialogTitle, DialogContent, DialogActions, InputAdornment,
 } from '@mui/material';
 import ManageAccountsIcon from '@mui/icons-material/ManageAccountsOutlined';
 import * as XLSX from 'xlsx';
@@ -17,12 +17,15 @@ import SyncAltIcon from '@mui/icons-material/SyncAltOutlined';
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
 import TableChartIcon from '@mui/icons-material/TableChartOutlined';
 import CheckCircleIcon from '@mui/icons-material/CheckCircle';
+import EditIcon from '@mui/icons-material/EditOutlined';
+import DeleteIcon from '@mui/icons-material/DeleteOutlined';
+import CloseIcon from '@mui/icons-material/Close';
 import {
   useMe, useSaveMultiBlastStructure, useAgents, useAgentStatuses, useBroadcasts, useBroadcastDetail, useCancelBroadcast, useCreateBroadcast,
-  useMultiBlastContacts, useMultiBlastContactIds, useImportMultiBlastContacts, useAssignMultiBlastContacts, useDistributeMultiBlastContacts, useDeleteMultiBlastContacts,
+  useMultiBlastContacts, useMultiBlastContactIds, useImportMultiBlastContacts, useAssignMultiBlastContacts, useDistributeMultiBlastContacts, useDeleteMultiBlastContacts, useUpdateMultiBlastContact,
 } from '../hooks';
 import { useDraftState } from '../draft';
-import { swalConfirm, swalToast } from '../services/swal';
+import { swalConfirm, swalConfirmDelete, swalToast } from '../services/swal';
 import { normalizePhone, type Agent, type BlastDelay, type Broadcast, type MultiBlastColumn, type MultiBlastContact } from '../types';
 import { defaultBroadcastSafetyForm } from '../services/broadcastSafety';
 import WhatsAppEditor, { VAR_DRAG_TYPE } from './WhatsAppEditor';
@@ -189,6 +192,87 @@ function PagerBar({ page, total, pageSize, onPage, onPageSize, note }: {
   );
 }
 
+// ContactEditDialog = ubah satu kontak: nomor, nama, kolom impor, dan penanggung jawab.
+// Kolom "Sudah di-blast" adalah riwayat, tidak bisa diubah.
+function ContactEditDialog({ agentId, agents, columns, contact, onClose }: {
+  agentId: number; agents: Agent[]; columns: MultiBlastColumn[]; contact: MultiBlastContact; onClose: () => void;
+}) {
+  const initialVars = useMemo(() => parseVars(contact), [contact]);
+  const [number, setNumber] = useState(contact.number);
+  const [name, setName] = useState(contact.name);
+  const [vars, setVars] = useState<Row>(initialVars);
+  const [owner, setOwner] = useState(contact.agent_id);
+  const updateM = useUpdateMultiBlastContact(agentId);
+  const cleanNumber = normalizePhone(number);
+  const validNumber = cleanNumber.length >= 9;
+  // Simpan hanya aktif kalau ada yang berubah — user tahu belum ada yang diubah.
+  const dirty = cleanNumber !== contact.number || name.trim() !== contact.name || owner !== contact.agent_id
+    || columns.some(c => (vars[c.key] || '') !== (initialVars[c.key] || ''));
+  const save = async () => {
+    if (!validNumber || !dirty) return;
+    try {
+      await updateM.mutateAsync({ id: contact.id, number: cleanNumber, name: name.trim(), vars, agent_id: owner });
+      swalToast('Kontak disimpan.');
+      onClose();
+    } catch (error) { swalToast(errorText(error, 'Kontak belum bisa disimpan.'), 'error'); }
+  };
+  const lastBlast = contact.last_blast_at
+    ? new Date(contact.last_blast_at).toLocaleString('id-ID', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' })
+    : null;
+  const group = (title: string, children: ReactNode) => (
+    <Box>
+      <Typography variant="overline" color="text.secondary" sx={{ display: 'block', lineHeight: 1.6, mb: 0.75, letterSpacing: 0.6 }}>{title}</Typography>
+      <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', sm: '1fr 1fr' }, gap: 1.5 }}>{children}</Box>
+    </Box>
+  );
+  return (
+    <Dialog open onClose={updateM.isPending ? undefined : onClose} fullWidth maxWidth="sm"
+      component="form" onSubmit={e => { e.preventDefault(); void save(); }}>
+      <DialogTitle sx={{ display: 'flex', alignItems: 'center', gap: 1, pr: 1.5 }}>
+        <Box sx={{ minWidth: 0, flex: 1 }}>
+          Edit kontak
+          <Typography variant="caption" color="text.secondary" sx={{ display: 'block', fontWeight: 400 }} noWrap>
+            {contact.name ? `${contact.name} · ` : ''}+{contact.number}
+          </Typography>
+        </Box>
+        <IconButton size="small" onClick={onClose} aria-label="Tutup" disabled={updateM.isPending}><CloseIcon fontSize="small" /></IconButton>
+      </DialogTitle>
+      <DialogContent>
+        <Stack spacing={2.5} sx={{ pt: 0.5 }}>
+          {group('Identitas', <>
+            <TextField size="small" label="Nomor WhatsApp" value={number} onChange={e => setNumber(e.target.value)} autoFocus
+              error={!validNumber} helperText={validNumber ? 'Awalan 0 otomatis jadi 62.' : 'Minimal 9 digit, contoh 628123456789.'}
+              slotProps={{ input: { startAdornment: <InputAdornment position="start">+</InputAdornment>, inputMode: 'tel' } }} />
+            <TextField size="small" label="Nama" value={name} onChange={e => setName(e.target.value)} placeholder="Nama pelanggan" />
+          </>)}
+          {columns.length > 0 && group('Data impor', columns.map(c => (
+            <TextField key={c.key} size="small" label={c.label} value={vars[c.key] || ''}
+              onChange={e => setVars({ ...vars, [c.key]: e.target.value })} />
+          )))}
+          {group('Pengiriman', <>
+            <TextField select size="small" label="Ditangani oleh" value={owner} onChange={e => setOwner(Number(e.target.value))}
+              helperText="Nomor yang mengirim ke kontak ini seterusnya.">
+              <MenuItem value={0}><em>Belum ditentukan</em></MenuItem>
+              {agents.map(a => <MenuItem key={a.id} value={a.id}>{a.name || `Nomor ${a.id}`}{a.number ? ` · +${a.number}` : ''}</MenuItem>)}
+            </TextField>
+            <Box sx={{ p: 1.25, borderRadius: 1, bgcolor: 'action.hover', alignSelf: 'start' }}>
+              <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>Sudah di-blast · riwayat, tidak bisa diubah</Typography>
+              <Typography variant="body2" sx={{ fontWeight: 700 }}>{contact.blast_count}×{lastBlast ? <Typography component="span" variant="caption" color="text.secondary"> · terakhir {lastBlast}</Typography> : null}</Typography>
+            </Box>
+          </>)}
+        </Stack>
+      </DialogContent>
+      <DialogActions>
+        <Button onClick={onClose} disabled={updateM.isPending}>Batal</Button>
+        <Button type="submit" variant="contained" disabled={!validNumber || !dirty || updateM.isPending}
+          startIcon={updateM.isPending ? <CircularProgress size={14} color="inherit" /> : undefined}>
+          {updateM.isPending ? 'Menyimpan…' : 'Simpan perubahan'}
+        </Button>
+      </DialogActions>
+    </Dialog>
+  );
+}
+
 // ContactTable = tabel data kontak berpaginasi. fixedAgent: hanya kontak yang ditangani nomor itu
 // (tab per nomor); tanpa fixedAgent = semua kontak dengan filter (tabel global).
 function ContactTable({ agentId, agents, columns, fixedAgent, selected, setSelected }: {
@@ -233,12 +317,21 @@ function ContactTable({ agentId, agents, columns, fixedAgent, selected, setSelec
     } catch (error) { swalToast(errorText(error, 'Gagal mengubah penanggung jawab.'), 'error'); }
   };
   const deleteSelected = async () => {
-    if (!await swalConfirm(`Hapus ${selectedHere.length} kontak dari data?`, 'Riwayat Blast tidak ikut terhapus.')) return;
+    if (!await swalConfirmDelete(`Hapus ${selectedHere.length} kontak?`, 'Kontak dihapus dari data ini. Riwayat Blast yang sudah terkirim tidak ikut terhapus.', `Hapus ${selectedHere.length} kontak`)) return;
     try {
       const res = await deleteM.mutateAsync({ ids: selectedHere });
       clearHere();
       setPage(1);
       swalToast(`${res.deleted} kontak dihapus.`);
+    } catch (error) { swalToast(errorText(error, 'Gagal menghapus.'), 'error'); }
+  };
+  const [editing, setEditing] = useState<MultiBlastContact | null>(null);
+  const deleteOne = async (r: MultiBlastContact) => {
+    if (!await swalConfirmDelete('Hapus kontak ini?', `${r.name ? `${r.name} · ` : ''}+${r.number}. Riwayat Blast yang sudah terkirim tidak ikut terhapus.`)) return;
+    try {
+      await deleteM.mutateAsync({ ids: [r.id] });
+      const n = new Set(selected); n.delete(r.id); setSelected(n);
+      swalToast('Kontak dihapus.');
     } catch (error) { swalToast(errorText(error, 'Gagal menghapus.'), 'error'); }
   };
 
@@ -261,8 +354,13 @@ function ContactTable({ agentId, agents, columns, fixedAgent, selected, setSelec
           {agents.filter(a => a.id !== fixedAgent).map(a => <MenuItem key={a.id} value={a.id}>{a.name || `Nomor ${a.id}`}{a.number ? ` · +${a.number}` : ''}</MenuItem>)}
         </TextField>
         <Button size="small" variant="contained" disabled={selectedHere.length === 0 || assignTarget === '' || assignM.isPending} onClick={() => { void assignSelected(); }}>Terapkan</Button>
-        <Button size="small" color="error" variant="outlined" disabled={selectedHere.length === 0 || deleteM.isPending} onClick={() => { void deleteSelected(); }}>Hapus</Button>
+        {selectedHere.length > 0 && (
+          <Button size="small" color="error" variant="contained" startIcon={<DeleteIcon />} disabled={deleteM.isPending} onClick={() => { void deleteSelected(); }}>
+            Hapus {selectedHere.length} terpilih
+          </Button>
+        )}
       </Stack>
+      {editing && <ContactEditDialog agentId={agentId} agents={agents} columns={extraColumns} contact={editing} onClose={() => setEditing(null)} />}
       {rows.length === 0 ? (
         <Alert severity="info" icon={false}>
           {fixedAgent ? 'Belum ada kontak yang ditangani nomor ini. Assign dari tab master, atau biarkan terisi otomatis saat Blast.' : 'Tidak ada kontak yang menunggu ditentukan. Impor file .xlsx dengan tombol di atas; kontak yang sudah di-assign ada di tab nomornya.'}
@@ -282,6 +380,7 @@ function ContactTable({ agentId, agents, columns, fixedAgent, selected, setSelec
                   {extraColumns.map(c => <TableCell key={c.key} sx={{ whiteSpace: 'nowrap' }}>{c.label}</TableCell>)}
                   {fixedAgent === undefined && <TableCell sx={{ whiteSpace: 'nowrap' }}>Ditangani oleh</TableCell>}
                   <TableCell align="right" sx={{ whiteSpace: 'nowrap' }}>Sudah di-blast</TableCell>
+                  <TableCell align="right" sx={{ whiteSpace: 'nowrap' }}>Aksi</TableCell>
                 </TableRow>
               </TableHead>
               <TableBody>
@@ -300,6 +399,10 @@ function ContactTable({ agentId, agents, columns, fixedAgent, selected, setSelec
                       )}
                       <TableCell align="right" sx={{ whiteSpace: 'nowrap' }}>
                         {r.blast_count}×{r.last_blast_at ? <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>{new Date(r.last_blast_at).toLocaleString('id-ID', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })}</Typography> : null}
+                      </TableCell>
+                      <TableCell align="right" padding="none" sx={{ whiteSpace: 'nowrap', pr: 0.5 }} onClick={e => e.stopPropagation()}>
+                        <IconButton size="small" title="Edit" onClick={() => setEditing(r)}><EditIcon fontSize="small" /></IconButton>
+                        <IconButton size="small" color="error" title="Hapus" onClick={() => { void deleteOne(r); }}><DeleteIcon fontSize="small" /></IconButton>
                       </TableCell>
                     </TableRow>
                   );

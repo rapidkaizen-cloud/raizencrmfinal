@@ -755,6 +755,9 @@ export function useDistributeMultiBlastContacts(agentId: number) {
 export function useDeleteMultiBlastContacts(agentId: number) {
   return useMultiBlastMutation<{ ids: number[] }, { deleted: number }>(agentId, 'delete');
 }
+export function useUpdateMultiBlastContact(agentId: number) {
+  return useMultiBlastMutation<{ id: number; number: string; name: string; vars: Record<string, string>; agent_id: number }, { updated: number }>(agentId, 'update');
+}
 
 export interface BroadcastRotationTestResult {
   pool_size: number;
